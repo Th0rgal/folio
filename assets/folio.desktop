@@ -1,0 +1,13 @@
+[Desktop Entry]
+Name=Folio
+GenericName=Markdown, LaTeX & Hindsight Knowledge Client
+Comment=Local-first Markdown, offline KaTeX, and Hindsight memory desktop client
+Exec=@out@/bin/folio %U
+Icon=folio
+Terminal=false
+Type=Application
+Categories=Office;Development;Education;TextEditor;Utility;
+Keywords=markdown;latex;katex;notes;hindsight;knowledge;memory;notion;
+MimeType=text/markdown;text/x-markdown;
+StartupWMClass=folio
+StartupNotify=true

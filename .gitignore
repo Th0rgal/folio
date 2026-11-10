@@ -1,0 +1,10 @@
+node_modules/
+dist/
+result
+result-*
+__pycache__/
+*.pyc
+.DS_Store
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
