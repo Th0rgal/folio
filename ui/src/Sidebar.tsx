@@ -56,7 +56,7 @@ function TreeBranch(props: {
       <button
         type="button"
         class={`row tree-row ${isActive() ? "active" : ""} ${isFolder() ? "project" : "file"}`}
-        style={{ "padding-left": `${6 + props.depth * 12}px` }}
+        style={{ "padding-left": `${16 + props.depth * 13}px` }}
         onClick={() => {
           if (props.node.uri && hasChildren()) {
             if (!expanded()) {
@@ -174,7 +174,7 @@ function BankSubcategory(props: {
       <button
         type="button"
         class={`row tree-row project bank-row ${props.isActiveBank && !expanded() ? "active" : ""}`}
-        style={{ "padding-left": "6px" }}
+        style={{ "padding-left": "16px" }}
         title={
           props.bank.name && props.bank.name !== props.bank.bank_id
             ? `${props.bank.bank_id} — ${props.bank.name}`
@@ -243,7 +243,7 @@ function ProviderSection(props: {
           onClick={props.onToggle}
         >
           <span class="provider-chevron">
-            {props.open ? <Ic.ChevronDown size={10} /> : <Ic.ChevronRight size={10} />}
+            {props.open ? <Ic.ChevronDown size={11.5} /> : <Ic.ChevronRight size={11.5} />}
           </span>
           <span class="provider-ico">{props.icon}</span>
           <span class="provider-title">{props.title}</span>
@@ -357,8 +357,8 @@ export function Sidebar(props: {
           {/* 1. Local Notes — expandable/hidable with icon + folder subcategories */}
           <ProviderSection
             id="local"
-            title="Local notes"
-            icon={<Ic.LocalNotesIcon size={13.5} />}
+            title="Local Notes"
+            icon={<Ic.LocalNotesIcon size={15.5} />}
             open={props.sectionOpen.local}
             onToggle={() => props.onToggleSection("local")}
             testId="local-tree"
@@ -370,16 +370,16 @@ export function Sidebar(props: {
                 aria-label="Mount local folder"
                 onClick={props.onOpenMountDialog}
               >
-                <Ic.PlusIcon size={13} />
+                <Ic.PlusIcon size={14} />
               </button>
             }
           >
             <For each={props.localTree}>
-              {(node) => (
+              {(node, idx) => (
                 <TreeBranch
                   node={node}
                   depth={0}
-                  defaultExpanded={true}
+                  defaultExpanded={idx() === 0}
                   activeUri={props.activeUri}
                   onSelectUri={(u) => props.onSelectUri(u)}
                 />
@@ -391,7 +391,7 @@ export function Sidebar(props: {
           <ProviderSection
             id="hindsight"
             title="Hindsight"
-            icon={<Ic.HindsightIcon size={13.5} />}
+            icon={<Ic.HindsightIcon size={15.5} />}
             open={props.sectionOpen.hindsight}
             onToggle={() => props.onToggleSection("hindsight")}
             statusDot={props.hindsightStatus?.connected ? "on" : "offline"}
@@ -423,7 +423,7 @@ export function Sidebar(props: {
           <ProviderSection
             id="notion"
             title="Notion"
-            icon={<Ic.NotionIcon size={13.5} />}
+            icon={<Ic.NotionIcon size={15.5} />}
             open={props.sectionOpen.notion}
             onToggle={() => props.onToggleSection("notion")}
             statusDot={props.notionStatus?.connected ? "on" : "offline"}
@@ -438,7 +438,7 @@ export function Sidebar(props: {
                   disabled={props.notionSyncing}
                   onClick={props.onSyncNotion}
                 >
-                  <Ic.RefreshIcon size={12.5} />
+                  <Ic.RefreshIcon size={13.5} />
                 </button>
               </Show>
             }

@@ -44,6 +44,12 @@ class LocalFsProvider:
     def _ensure_default_mount(self) -> None:
         mounts = self.cache.list_mounts()
         env_dirs = [p.strip() for p in os.environ.get("FOLIO_NOTES_DIRS", "").split(os.pathsep) if p.strip()]
+        resolved_default = self.default_dir.expanduser().resolve()
+        if len(mounts) == 1:
+            only_root = Path(mounts[0]["root_path"]).resolve()
+            if only_root == (resolved_default / "Folio").resolve() and resolved_default.name != "Folio":
+                self.unmount_directory(mounts[0]["mount_id"])
+                mounts = []
         if not mounts:
             self.default_dir.mkdir(parents=True, exist_ok=True)
             self._seed_starter_notes_if_empty(self.default_dir)
@@ -288,13 +294,22 @@ flowchart LR
             updated_at=updated_iso,
         )
 
+    @classmethod
+    def _annotate_folder_counts(cls, node: TreeNode) -> int:
+        if node.kind != "folder":
+            return 1
+        total = 0
+        for ch in node.children:
+            total += cls._annotate_folder_counts(ch)
+        node.badge = str(total) if total > 0 else None
+        return total
+
     def list_tree(self, scope: Optional[str] = None) -> list[TreeNode]:
         mounts = self.cache.list_mounts()
+        filtered_mounts = [m for m in mounts if not scope or m["mount_id"] == scope]
         roots: list[TreeNode] = []
-        for m in mounts:
+        for m in filtered_mounts:
             mid = m["mount_id"]
-            if scope and scope != mid:
-                continue
             docs = self.cache.list_documents(provider=self.provider_id, scope=mid)
             mount_node = TreeNode(
                 id=f"mount:{mid}",
@@ -316,6 +331,9 @@ flowchart LR
                         is_agent_summary=doc.provenance.is_agent_summary,
                     )
                 )
+            self._annotate_folder_counts(mount_node)
+            if len(filtered_mounts) == 1:
+                return mount_node.children
             roots.append(mount_node)
         return roots
 

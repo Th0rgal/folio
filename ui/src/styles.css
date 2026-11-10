@@ -390,11 +390,20 @@ select:focus:not(:focus-visible) {
   align-items: center;
   gap: 8px;
   width: 100%;
-  height: 30px;
+  height: 31px;
   padding: 0 6px;
   border-radius: var(--radius-sm);
   text-align: left;
   color: var(--fg);
+}
+
+.sb-main-nav > .row {
+  height: 32px;
+}
+
+.sb-main-nav > .row .row-label {
+  font-size: 13.5px;
+  font-weight: 450;
 }
 
 .row-ico,
@@ -421,11 +430,16 @@ select:focus:not(:focus-visible) {
 }
 
 .row.project {
-  color: var(--fg-2);
+  color: var(--fg);
+}
+
+.row.project > .row-label {
+  font-size: 13.5px;
+  font-weight: 500;
 }
 
 .row.project:hover:not(.active) {
-  color: var(--fg);
+  color: var(--fg-strong);
   background: var(--bg-hover);
 }
 
@@ -506,10 +520,10 @@ select:focus:not(:focus-visible) {
 }
 
 .section {
-  color: var(--fg-3);
-  font-size: 11.5px;
+  color: var(--fg);
+  font-size: 14px;
   padding: 0 4px 0 2px;
-  margin: 12px 0 3px;
+  margin: 15px 0 3px;
 }
 
 .section-row {
@@ -520,21 +534,22 @@ select:focus:not(:focus-visible) {
 }
 
 .provider-section + .provider-section {
-  margin-top: 2px;
+  margin-top: 4px;
 }
 
 .provider-toggle {
   flex: 1;
   min-width: 0;
-  height: 26px;
-  padding: 0 6px 0 4px;
+  height: 34px;
+  padding: 0 8px 0 5px;
   border-radius: var(--radius-sm);
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  color: var(--fg-3);
-  font-size: 11.5px;
-  font-weight: 500;
+  gap: 8px;
+  color: var(--fg-strong);
+  font-size: 14.5px;
+  font-weight: 600;
+  letter-spacing: -0.012em;
   text-align: left;
   transition:
     background 90ms ease,
@@ -543,33 +558,33 @@ select:focus:not(:focus-visible) {
 
 .provider-toggle:hover {
   background: var(--bg-hover);
-  color: var(--fg);
+  color: var(--fg-strong);
 }
 
 .provider-chevron {
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
   display: grid;
   place-items: center;
-  color: var(--fg-4);
+  color: var(--fg-3);
   flex: none;
 }
 
 .provider-toggle:hover .provider-chevron {
-  color: var(--fg-3);
+  color: var(--fg-2);
 }
 
 .provider-ico {
-  width: 15px;
-  height: 15px;
+  width: 17px;
+  height: 17px;
   display: grid;
   place-items: center;
-  color: var(--fg-3);
+  color: var(--fg-2);
   flex: none;
 }
 
 .provider-toggle:hover .provider-ico {
-  color: var(--fg-2);
+  color: var(--fg-strong);
 }
 
 .provider-title {
@@ -587,8 +602,8 @@ select:focus:not(:focus-visible) {
 }
 
 .section-add {
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   border-radius: var(--radius-xs);
   display: grid;
   place-items: center;
@@ -945,14 +960,14 @@ body.resizing .sb-resize {
   align-items: center;
   gap: 6px;
   min-width: 0;
-  font-size: 12.5px;
+  font-size: 13.5px;
   overflow: hidden;
 }
 
 .crumb-provider {
   flex: none;
   color: var(--fg-3);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .crumb-sep {
@@ -966,7 +981,8 @@ body.resizing .sb-resize {
 }
 
 .crumb-title {
-  font-weight: 500;
+  font-size: 14px;
+  font-weight: 550;
   color: var(--fg-strong);
   overflow: hidden;
   text-overflow: ellipsis;

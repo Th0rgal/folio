@@ -488,7 +488,7 @@ def run_server() -> int:
 
     xdg_state = Path(os.environ.get("XDG_STATE_HOME") or (Path.home() / ".local" / "state"))
     state_dir = Path(os.environ.get("FOLIO_STATE_DIR") or (xdg_state / "folio"))
-    notes_dir = Path(os.environ.get("FOLIO_DEFAULT_NOTES_DIR") or (Path.home() / "Notes" / "Folio"))
+    notes_dir = Path(os.environ.get("FOLIO_DEFAULT_NOTES_DIR") or (Path.home() / "Notes"))
 
     engine = FolioEngine(state_dir=state_dir, default_notes_dir=notes_dir)
     engine.start_background()
