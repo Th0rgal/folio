@@ -15,6 +15,7 @@ export function SearchModal(props: {
   const [loading, setLoading] = createSignal(false);
   const [includeHindsight, setIncludeHindsight] = createSignal(true);
   let inputRef: HTMLInputElement | undefined;
+  const stripFtsMarks = (s: string): string => s.replace(/<\/?mark>/g, "");
 
   const runSearch = async (q: string, withHs: boolean) => {
     setLoading(true);
@@ -151,7 +152,7 @@ export function SearchModal(props: {
                         </span>
                       </div>
                       <Show when={hit.snippet}>
-                        <div class="search-row-snippet">{hit.snippet}</div>
+                        <div class="search-row-snippet">{stripFtsMarks(hit.snippet)}</div>
                       </Show>
                     </button>
                   );

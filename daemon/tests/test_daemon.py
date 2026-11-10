@@ -1,9 +1,10 @@
+import http.client
 import json
 import os
 import tempfile
 import threading
 import unittest
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
@@ -21,7 +22,7 @@ from folio_daemon.markdown_utils import (
 )
 from folio_daemon.notion import NotionProvider
 from folio_daemon.secrets import CredentialResolver
-from folio_daemon.server import FolioEngine
+from folio_daemon.server import FolioEngine, create_http_handler, resolve_system_binary
 
 
 class MarkdownUtilsTest(unittest.TestCase):
@@ -242,6 +243,77 @@ class MockRemoteApisTest(unittest.TestCase):
         self.assertIn("Energy $E = mc^2$", joined)
         self.assertIn("$$\n\\int_0^1 x^2 dx = \\frac{1}{3}\n$$", joined)
         self.assertIn("- [x] Done", joined)
+
+
+class HttpServerAndSseTest(unittest.TestCase):
+    def test_static_cache_headers_wasm_mime_and_race_free_sse(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            ui_root = tmp_path / "ui"
+            (ui_root / "assets").mkdir(parents=True)
+            (ui_root / "index.html").write_text("<!doctype html><title>Folio</title>", encoding="utf-8")
+            (ui_root / "assets" / "app-9f8e7d.js").write_text("console.log('ok');", encoding="utf-8")
+            (ui_root / "assets" / "KaTeX_Main-Regular.woff2").write_bytes(b"wOF2")
+            (ui_root / "math.wasm").write_bytes(b"\x00asm\x01\x00\x00\x00")
+
+            engine = FolioEngine(tmp_path / "state", tmp_path / "notes")
+            token = "test-locald-token-0123456789abcdef0123456789abcdef"
+            srv = ThreadingHTTPServer(("127.0.0.1", 0), create_http_handler(engine, 0, token, ui_root))
+            port = srv.server_address[1]
+            t = threading.Thread(target=srv.serve_forever, daemon=True)
+            t.start()
+            try:
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                conn.request("GET", "/index.html")
+                r_html = conn.getresponse()
+                r_html.read()
+                self.assertEqual(r_html.status, 200)
+                self.assertEqual(r_html.getheader("Cache-Control"), "no-cache")
+
+                conn.request("GET", "/assets/app-9f8e7d.js")
+                r_js = conn.getresponse()
+                r_js.read()
+                self.assertEqual(r_js.status, 200)
+                self.assertEqual(r_js.getheader("Cache-Control"), "public, max-age=31536000, immutable")
+
+                conn.request("GET", "/math.wasm")
+                r_wasm = conn.getresponse()
+                r_wasm.read()
+                self.assertEqual(r_wasm.status, 200)
+                self.assertEqual(r_wasm.getheader("Content-Type"), "application/wasm")
+                self.assertEqual(r_wasm.getheader("Cache-Control"), "public, max-age=31536000, immutable")
+
+                conn.request("GET", "/__folio_events")
+                r_forbid = conn.getresponse()
+                r_forbid.read()
+                self.assertEqual(r_forbid.status, 403)
+                conn.close()
+
+                sse_conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                sse_conn.request("GET", f"/__folio_events?token={token}")
+                sse_resp = sse_conn.getresponse()
+                self.assertEqual(sse_resp.status, 200)
+                self.assertTrue((sse_resp.getheader("Content-Type") or "").startswith("text/event-stream"))
+                ready_line = sse_resp.fp.readline().decode("utf-8")
+                self.assertEqual(ready_line, ": ready\n")
+                sse_resp.fp.readline()
+
+                engine.push_event("theme:changed", {"mode": "light"})
+                data_line = sse_resp.fp.readline().decode("utf-8")
+                self.assertTrue(data_line.startswith("data: "))
+                ev_obj = json.loads(data_line[len("data: "):].strip())
+                self.assertEqual(ev_obj["event"], "theme:changed")
+                self.assertEqual(ev_obj["payload"], {"mode": "light"})
+                sse_conn.close()
+            finally:
+                engine.shutdown()
+                srv.shutdown()
+                srv.server_close()
+
+    def test_binary_resolution_fallback(self) -> None:
+        with mock.patch("shutil.which", return_value=None):
+            self.assertIsNone(resolve_system_binary("definitely-nonexistent-folio-bin-xyz"))
+            self.assertIsNone(CredentialResolver._resolve_binary("definitely-nonexistent-folio-bin-xyz"))
 
 
 if __name__ == "__main__":

@@ -82,6 +82,13 @@ $$
 p_\\beta(\\theta \\mid y) = \\frac{\\pi_0(\\theta)\\,\\exp\\!\\bigl(-\\beta\\,\\mathcal{E}(\\theta; y)\\bigr)}{\\int_{\\Theta} \\pi_0(\\vartheta)\\,\\exp\\!\\bigl(-\\beta\\,\\mathcal{E}(\\vartheta; y)\\bigr)\\,\\mathrm{d}\\vartheta}, \\qquad \\mathrm{KL}\\bigl(q \\,\\|\\, p_\\beta\\bigr) \\le \\varepsilon_{\\text{gate}}
 $$
 
+```lean
+theorem spec_gate_sound (s : SpecState) (h_inv : ValidInvariant s) :
+    evalGate s = .accepted -> PreservesSafety s := by
+  intro h_acc
+  exact safety_of_accepted h_inv h_acc
+```
+
 For discrete shard budgets $B = \\sum_{i=1}^{K} b_i$ with inline bound $\\mathbb{P}(\\text{unsound}) \\le 2^{-128}$ and LaTeX bracketed display math:
 
 \\[
@@ -96,14 +103,7 @@ For discrete shard budgets $B = \\sum_{i=1}^{K} b_i$ with inline bound $\\mathbb
 | Spec Layer 2 | Two-sided CVE subspec | `48 ms` | Counterexample-checked | $25 |
 | Native Runner | `lean-native` SIMD | `3.2 ms` | Bit-exact equivalence | $100 |
 
-## 3. Verification Pipeline
-
-```lean
-theorem spec_gate_sound (s : SpecState) (h_inv : ValidInvariant s) :
-    evalGate s = .accepted -> PreservesSafety s := by
-  intro h_acc
-  exact safety_of_accepted h_inv h_acc
-```
+## 3. Verification Checklist
 
 - [x] Mount local Markdown directories with instant SQLite FTS5 indexing
 - [x] Cross-reference live Hindsight `thomas` Knowledge Pages (`kp-*`)

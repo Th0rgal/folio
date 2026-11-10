@@ -1,5 +1,11 @@
+// @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
+import { createEffect, createSignal } from "solid-js";
+import { render } from "solid-js/web";
+import { EquationPopover } from "./EquationPopover";
+import { MarkdownView } from "./MarkdownView";
 import { applyMathEdit, extractMathSpans } from "./mathParser";
+import type { MathSpan } from "./types";
 
 describe("extractMathSpans", () => {
   it("parses inline $, \\(...\\), display $$, and \\[...\\] with exact raw offsets", () => {
@@ -56,5 +62,97 @@ describe("extractMathSpans", () => {
     expect(spans).toHaveLength(2);
     const updated = applyMathEdit(md, spans[0], "\\pi_1(\\theta)");
     expect(updated).toBe("Prior $\\pi_1(\\theta)$ updates to $$p(\\theta \\mid y)$$ cleanly.");
+  });
+
+  it("renders headings, lists, callouts, code blocks, and KaTeX equations in MarkdownView without throwing", () => {
+    const md = [
+      "# Heading One",
+      "",
+      "> [!tip] Invariant",
+      "> Keep inline math $\\pi_0(\\theta)$ crisp.",
+      "",
+      "$$",
+      "E = mc^2",
+      "$$",
+      "",
+      "- [x] First task",
+      "- [ ] Second task",
+      "",
+      "1. Ordered one",
+      "2. Ordered two",
+      "",
+      "```lean",
+      "theorem t : True := trivial",
+      "```",
+    ].join("\n");
+
+    const host = document.createElement("div");
+    const dispose = render(
+      () =>
+        MarkdownView({
+          rawMarkdown: md,
+          macros: { "\\R": "\\mathbb{R}" },
+          themeMode: "dark",
+          activeMathIndex: null,
+          onSelectMath: () => {},
+          onOpenWikilink: () => {},
+          onExternalUrl: () => {},
+        }),
+      host,
+    );
+
+    expect(host.querySelector("h1.md-h1")?.textContent).toBe("Heading One");
+    expect(host.querySelectorAll("ul.md-list li")).toHaveLength(2);
+    expect(host.querySelectorAll("ol.md-list li")).toHaveLength(2);
+    expect(host.querySelectorAll(".katex").length).toBeGreaterThanOrEqual(2);
+    expect(host.querySelector(".callout-card")).not.toBeNull();
+    expect(host.querySelector(".code-card")).not.toBeNull();
+    dispose();
+  });
+
+  it("renders EquationPopover and synchronizes selectedMath offsets without reactive loops", () => {
+    const [raw, setRaw] = createSignal("Intro $\\pi_0(\\theta)$ and $$E = mc^2$$.");
+    const [selected, setSelected] = createSignal<MathSpan | null>(extractMathSpans(raw())[1]);
+    let runs = 0;
+
+    const host = document.createElement("div");
+    const dispose = render(() => {
+      createEffect(() => {
+        runs += 1;
+        const currentSpan = selected();
+        if (!currentSpan) return;
+        const spans = extractMathSpans(raw());
+        const updatedSpan = spans[currentSpan.index];
+        if (
+          updatedSpan &&
+          updatedSpan.tex === currentSpan.tex &&
+          (updatedSpan.rawStart !== currentSpan.rawStart ||
+            updatedSpan.rawEnd !== currentSpan.rawEnd ||
+            updatedSpan.delimiter !== currentSpan.delimiter)
+        ) {
+          setSelected(updatedSpan);
+        }
+      });
+      const span = selected();
+      return span
+        ? EquationPopover({
+            span,
+            readonly: false,
+            macros: { "\\R": "\\mathbb{R}" },
+            onApply: () => {},
+            onSaveMacros: () => {},
+            onClose: () => setSelected(null),
+          })
+        : null;
+    }, host);
+
+    expect(runs).toBeLessThanOrEqual(2);
+    expect(host.querySelector('[data-testid="equation-popover"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="equation-live-preview"] .katex')).not.toBeNull();
+
+    setRaw("Updated prefix text: $\\pi_0(\\theta)$ and $$E = mc^2$$.");
+    expect(runs).toBeLessThanOrEqual(4);
+    expect(selected()?.rawStart).toBeGreaterThan(20);
+    dispose();
   });
 });

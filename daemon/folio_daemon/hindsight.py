@@ -103,12 +103,17 @@ class HindsightProvider:
         has_hs = self.secrets.has("hindsight_api_key")
         has_sm = self.secrets.has("spark_memory_api_token")
         cached_docs = self.cache.list_documents(provider=self.provider_id)
+        connected = has_hs or has_sm
         return {
             "provider": self.provider_id,
-            "configured": has_hs or has_sm,
+            "provider_id": self.provider_id,
+            "configured": connected,
+            "connected": connected,
             "base_url": self.base_url,
+            "api_url": self.base_url,
             "default_bank": self.default_bank,
             "readonly_guard": self.strict_readonly,
+            "readonly": self.strict_readonly,
             "auth_sources": {
                 "hindsight_api_key": self.secrets.source_kind("hindsight_api_key"),
                 "spark_memory_api_token": self.secrets.source_kind("spark_memory_api_token"),
@@ -508,6 +513,8 @@ class HindsightProvider:
                     "folder_path": f"{bank_id}/knowledge-pages",
                     "snippet": str(item.get("snippet") or "")[:240],
                     "tags": [],
+                    "is_agent_summary": True,
+                    "author": "hindsight:knowledge-page",
                     "provenance": {
                         "author": "hindsight:knowledge-page",
                         "source_type": "knowledge_page",
@@ -568,6 +575,8 @@ class HindsightProvider:
                         "folder_path": f"{bank_id}/memories",
                         "snippet": str(fact.get("text") or "")[:240],
                         "tags": [str(t) for t in (fact.get("tags") or [])],
+                        "is_agent_summary": is_agent,
+                        "author": auteur,
                         "provenance": {
                             "author": auteur,
                             "source_type": stype,

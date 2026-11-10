@@ -1,4 +1,5 @@
 import { For, Show, createEffect, createSignal } from "solid-js";
+import { Dynamic } from "solid-js/web";
 import { highlightCodeSafe } from "./codeHighlight";
 import { renderKatexSafe } from "./katexRender";
 import { extractMathSpans, splitFrontmatterOffset } from "./mathParser";
@@ -581,9 +582,9 @@ export function MarkdownView(props: {
       <For each={parsed().blocks}>
         {(block, idx) => {
           if (block.kind === "heading") {
-            const Tag = `h${block.level}` as "h1" | "h2" | "h3" | "h4";
+            const tag = `h${block.level}` as "h1" | "h2" | "h3" | "h4";
             return (
-              <Tag id={block.id} class={`md-h md-h${block.level}`}>
+              <Dynamic component={tag} id={block.id} class={`md-h md-h${block.level}`}>
                 <InlineRun
                   nodes={block.inlines}
                   macros={props.macros}
@@ -592,7 +593,7 @@ export function MarkdownView(props: {
                   onOpenWikilink={props.onOpenWikilink}
                   onExternalUrl={props.onExternalUrl}
                 />
-              </Tag>
+              </Dynamic>
             );
           }
 
@@ -717,9 +718,9 @@ export function MarkdownView(props: {
           }
 
           if (block.kind === "list") {
-            const ListTag = block.ordered ? "ol" : "ul";
+            const listTag = block.ordered ? "ol" : "ul";
             return (
-              <ListTag class="md-list">
+              <Dynamic component={listTag} class="md-list">
                 <For each={block.items}>
                   {(item) => (
                     <li class={item.checked !== null ? "md-task-item" : ""}>
@@ -741,7 +742,7 @@ export function MarkdownView(props: {
                     </li>
                   )}
                 </For>
-              </ListTag>
+              </Dynamic>
             );
           }
 

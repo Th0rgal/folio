@@ -19,6 +19,17 @@
   - Translucent RGBA frosted-glass chrome (`opacity = "0.88 0.88"`, `rounding = theme.ui.rounding`, `border_size = theme.ui.borderSize`).
   - Live `starship-subtle` Dark & `starship-subtle-light` Light mode synchronization (`omarchnix theme toggle` + `prefers-color-scheme`).
   - Wayland HiDPI (`96.0` DPI fix), `GTK_USE_PORTAL=1`, `fcitx5` `us(intl)` dead-key IME safety (`event.isComposing`), and `Super -> Meta` shortcut forwarding (`Cmd+K`, `Cmd+N`, `Cmd+S`, `Cmd+\`, `Cmd+Shift+E`, `Cmd+Shift+L`).
+  - Apple Silicon M2 AGX (`aurora` DRM) DMA-BUF priority (`/run/opengl-driver` prepended in wrapper & devShell), bounded WebKitGTK memory pressure (`512 MiB` soft limit, `DOCUMENT_BROWSER` cache model), immutable hashed asset caching, and race-free SSE desktop events (`/__folio_events`).
+
+---
+
+## Screenshots (`omarchnix` + Hyprland Wayland)
+
+| Hindsight Knowledge Page (`starship-subtle` Dark) | Live Inline LaTeX (`KaTeX`) Equation Editor |
+| :---: | :---: |
+| ![Dark mode Hindsight KP](docs/screenshots/shot1-dark-hindsight-kp.png) | ![Inline LaTeX Equation Editor](docs/screenshots/shot2-latex-equation-editor.png) |
+| **`Cmd+K` Unified Hybrid Search & Recall** | **Light Mode (`starship-subtle-light`) + Dock & Spotlight** |
+| ![Cmd+K Unified Search](docs/screenshots/shot3-cmdk-unified-search.png) | ![Light Mode Dock & Spotlight](docs/screenshots/shot4-light-mode-dock-spotlight.png) |
 
 ---
 

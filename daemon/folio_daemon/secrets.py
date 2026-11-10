@@ -127,11 +127,25 @@ class CredentialResolver:
             return None
 
     @staticmethod
+    def _resolve_binary(name: str, darwin_fallback: Optional[str] = None) -> Optional[str]:
+        found = shutil.which(name)
+        if found:
+            return found
+        nix_sys = Path("/run/current-system/sw/bin") / name
+        if nix_sys.is_file() and os.access(nix_sys, os.X_OK):
+            return str(nix_sys)
+        if darwin_fallback and platform.system().lower() == "darwin":
+            fb = Path(darwin_fallback)
+            if fb.is_file() and os.access(fb, os.X_OK):
+                return str(fb)
+        return None
+
+    @staticmethod
     def _lookup_os_keyring(logical_name: str) -> Optional[str]:
         sys_name = platform.system().lower()
         env_names = SECRET_ENV_MAP.get(logical_name, (logical_name.upper(),))
         if sys_name == "linux":
-            secret_tool = shutil.which("secret-tool")
+            secret_tool = CredentialResolver._resolve_binary("secret-tool")
             if secret_tool:
                 for key_name in env_names:
                     for attr_pair in (
@@ -151,8 +165,8 @@ class CredentialResolver:
                         except Exception:
                             pass
         elif sys_name == "darwin":
-            security_bin = "/usr/bin/security"
-            if os.path.exists(security_bin):
+            security_bin = CredentialResolver._resolve_binary("security", darwin_fallback="/usr/bin/security")
+            if security_bin:
                 for key_name in env_names:
                     try:
                         res = subprocess.run(

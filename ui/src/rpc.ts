@@ -52,20 +52,50 @@ export async function listenDesktopEvent(
     return bridge.event.listen(eventName, (ev) => handler(ev.payload));
   }
   let stopped = false;
-  const timer = window.setInterval(async () => {
-    if (stopped) return;
-    try {
-      const events = await rpcInvoke<Array<{ event: string; payload: unknown }>>("poll_events");
-      for (const item of events) {
-        if (item.event === eventName) handler(item.payload);
+  let timer = 0;
+  let es: EventSource | null = null;
+  const startPolling = () => {
+    if (stopped || timer) return;
+    timer = window.setInterval(async () => {
+      if (stopped) return;
+      try {
+        const events = await rpcInvoke<Array<{ event: string; payload: unknown }>>("poll_events");
+        for (const item of events) {
+          if (item.event === eventName) handler(item.payload);
+        }
+      } catch {
+        // Ignore transient reconnects during dev reload.
       }
+    }, 600);
+  };
+  if (typeof window !== "undefined" && typeof window.EventSource === "function") {
+    try {
+      es = new window.EventSource("/__folio_events");
+      es.onmessage = (msg) => {
+        try {
+          const item = JSON.parse(msg.data) as { event?: string; payload?: unknown };
+          if (item.event === eventName) handler(item.payload);
+        } catch {
+          // Ignore malformed keepalive/event payloads.
+        }
+      };
+      es.onerror = () => {
+        if (es && es.readyState === 2) {
+          es.close();
+          es = null;
+          startPolling();
+        }
+      };
     } catch {
-      // Ignore transient reconnects during dev reload.
+      startPolling();
     }
-  }, 600);
+  } else {
+    startPolling();
+  }
   return () => {
     stopped = true;
-    window.clearInterval(timer);
+    if (es) es.close();
+    if (timer) window.clearInterval(timer);
   };
 }
 

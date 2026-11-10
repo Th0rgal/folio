@@ -1,8 +1,10 @@
 {
   lib,
   stdenv,
+  clangStdenv ? stdenv,
   nodejs,
   pnpm,
+  pnpm_10 ? pnpm,
   pnpmConfigHook,
   fetchPnpmDeps,
   python3,
@@ -18,27 +20,39 @@
   apple-sdk_15 ? null,
   swift ? null,
   folioSrc,
-  pnpmDepsHash ? "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+  pnpmDepsHash ? "sha256-ddCy5/Fci/Ldx8EuqnTz86BevFnOn1wCkS33ffZCWTI=",
 }:
 let
   version = "0.1.0";
 
+  uiSrc = lib.cleanSourceWith {
+    src = "${folioSrc}/ui";
+    filter =
+      path: type:
+      let
+        base = baseNameOf (toString path);
+      in
+      base != "node_modules" && base != "dist";
+  };
+
   pnpmDeps = fetchPnpmDeps {
     pname = "folio-ui";
     inherit version;
-    src = "${folioSrc}/ui";
-    fetcherVersion = 3;
+    src = uiSrc;
+    pnpm = pnpm_10;
+    fetcherVersion = 5;
     hash = pnpmDepsHash;
   };
 
   folio-ui = stdenv.mkDerivation {
     pname = "folio-ui";
     inherit version pnpmDeps;
-    src = "${folioSrc}/ui";
+    src = uiSrc;
+    env.CI = "true";
 
     nativeBuildInputs = [
       nodejs
-      pnpm
+      pnpm_10
       pnpmConfigHook
     ];
 
@@ -79,8 +93,8 @@ let
       #!${python3}/bin/python3
       import sys
       sys.path.insert(0, "$out/lib/folio")
-      from folio_daemon.server import main
-      raise SystemExit(main())
+      from folio_daemon.server import run_server
+      raise SystemExit(run_server())
       EOF
       chmod 0755 "$out/bin/.folio-locald-unwrapped"
       makeWrapper "$out/bin/.folio-locald-unwrapped" "$out/bin/folio-locald" \
@@ -96,7 +110,7 @@ let
   };
 in
 if stdenv.hostPlatform.isLinux then
-  stdenv.mkDerivation {
+  clangStdenv.mkDerivation {
     pname = "folio-desktop";
     inherit version;
     src = "${folioSrc}/linux_shell";
@@ -117,7 +131,7 @@ if stdenv.hostPlatform.isLinux then
 
     buildPhase = ''
       runHook preBuild
-      make HAS_WEBKIT=1 folio
+      make CC=clang HAS_WEBKIT=1 folio
       runHook postBuild
     '';
 
@@ -163,6 +177,13 @@ if stdenv.hostPlatform.isLinux then
         --set-default SSL_CERT_FILE "${cacert}/etc/ssl/certs/ca-bundle.crt" \
         --set-default NIX_SSL_CERT_FILE "${cacert}/etc/ssl/certs/ca-bundle.crt" \
         --run ${lib.escapeShellArg ''
+          if [ -d /run/opengl-driver ]; then
+            export XDG_DATA_DIRS="/run/opengl-driver/share''${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
+            export LD_LIBRARY_PATH="/run/opengl-driver/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            export LIBGL_DRIVERS_PATH="/run/opengl-driver/lib/dri''${LIBGL_DRIVERS_PATH:+:$LIBGL_DRIVERS_PATH}"
+            export GBM_BACKENDS_PATH="/run/opengl-driver/lib/gbm''${GBM_BACKENDS_PATH:+:$GBM_BACKENDS_PATH}"
+            [ -d /run/opengl-driver/share/glvnd/egl_vendor.d ] && export __EGL_VENDOR_LIBRARY_DIRS="/run/opengl-driver/share/glvnd/egl_vendor.d''${__EGL_VENDOR_LIBRARY_DIRS:+:$__EGL_VENDOR_LIBRARY_DIRS}"
+          fi
           case " $* " in
             *" --self-test "*) ;;
             *)

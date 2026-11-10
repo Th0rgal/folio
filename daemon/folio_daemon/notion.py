@@ -59,7 +59,9 @@ class NotionProvider:
         docs = self.cache.list_documents(provider=self.provider_id)
         return {
             "provider": self.provider_id,
+            "provider_id": self.provider_id,
             "configured": configured,
+            "connected": configured,
             "auth_source": self.secrets.source_kind("notion_api_key"),
             "cached_count": len(docs),
         }

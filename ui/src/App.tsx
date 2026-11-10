@@ -267,7 +267,13 @@ export function App() {
     if (!currentSpan) return;
     const spans = extractMathSpans(draftMarkdown());
     const updatedSpan = spans[currentSpan.index];
-    if (updatedSpan && updatedSpan.tex === currentSpan.tex) {
+    if (
+      updatedSpan &&
+      updatedSpan.tex === currentSpan.tex &&
+      (updatedSpan.rawStart !== currentSpan.rawStart ||
+        updatedSpan.rawEnd !== currentSpan.rawEnd ||
+        updatedSpan.delimiter !== currentSpan.delimiter)
+    ) {
       setSelectedMath(updatedSpan);
     }
   });

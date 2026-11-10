@@ -1,4 +1,4 @@
-CC ?= cc
+CC ?= clang
 PKG_CONFIG ?= pkg-config
 CFLAGS ?= -O2 -Wall -Wextra -std=c11
 

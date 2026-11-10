@@ -16,7 +16,7 @@
       ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
 
-      pnpmDepsHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+      pnpmDepsHash = "sha256-ddCy5/Fci/Ldx8EuqnTz86BevFnOn1wCkS33ffZCWTI=";
 
       folioOverlay = final: prev: {
         folio-desktop = final.callPackage ./nix/package.nix {
@@ -58,6 +58,48 @@
           folio-locald = pkgs.folio-locald;
           folio-ui = pkgs.folio-ui;
           default = pkgs.folio-desktop;
+        }
+      );
+
+      devShells = forAllSystems (
+        system:
+        let
+          pkgs = import nixpkgs {
+            inherit system;
+            overlays = [ folioOverlay ];
+          };
+          isLinux = pkgs.stdenv.hostPlatform.isLinux;
+        in
+        {
+          default = pkgs.mkShell.override { stdenv = pkgs.clangStdenv; } {
+            packages =
+              [
+                pkgs.nodejs
+                pkgs.pnpm_10
+                pkgs.python3
+                pkgs.pkg-config
+              ]
+              ++ nixpkgs.lib.optionals isLinux [
+                pkgs.gtk3
+                pkgs.webkitgtk_4_1
+                pkgs.librsvg
+                pkgs.libsecret
+                pkgs.xdg-utils
+              ];
+
+            shellHook = ''
+              export CC=clang
+            ''
+            + nixpkgs.lib.optionalString isLinux ''
+              if [ -d /run/opengl-driver ]; then
+                export XDG_DATA_DIRS="/run/opengl-driver/share''${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
+                export LD_LIBRARY_PATH="/run/opengl-driver/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+                export LIBGL_DRIVERS_PATH="/run/opengl-driver/lib/dri''${LIBGL_DRIVERS_PATH:+:$LIBGL_DRIVERS_PATH}"
+                export GBM_BACKENDS_PATH="/run/opengl-driver/lib/gbm''${GBM_BACKENDS_PATH:+:$GBM_BACKENDS_PATH}"
+                [ -d /run/opengl-driver/share/glvnd/egl_vendor.d ] && export __EGL_VENDOR_LIBRARY_DIRS="/run/opengl-driver/share/glvnd/egl_vendor.d''${__EGL_VENDOR_LIBRARY_DIRS:+:$__EGL_VENDOR_LIBRARY_DIRS}"
+              fi
+            '';
+          };
         }
       );
 

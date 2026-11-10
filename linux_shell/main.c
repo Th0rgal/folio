@@ -7,11 +7,14 @@
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
 #include <fcntl.h>
+#include <netinet/in.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 #if defined(FOLIO_HAS_WEBKITGTK)
 #include <gtk/gtk.h>
@@ -83,19 +86,43 @@ static char *build_init_script(unsigned port, const char *token) {
     if (!tok_lit) return NULL;
     static const char tmpl[] =
         "(() => {\n"
-        "  const _fetch = window.fetch.bind(window), _jsonStringify = JSON.stringify;\n"
-        "  const FOLIO_LOCALD_URL = \"http://127.0.0.1:%u/__folio_rpc\", FOLIO_TOKEN = %s;\n"
+        "  const _fetch = window.fetch.bind(window), _jsonStringify = JSON.stringify, _EventSource = window.EventSource;\n"
+        "  const FOLIO_LOCALD_BASE = \"http://127.0.0.1:%u\", FOLIO_LOCALD_URL = FOLIO_LOCALD_BASE + \"/__folio_rpc\", FOLIO_TOKEN = %s;\n"
         "  class Channel { constructor() { this.onmessage = () => {}; } }\n"
-        "  const listeners = new Map(); let timer = 0;\n"
+        "  const listeners = new Map(); let timer = 0, es = null;\n"
+        "  const hasListeners = () => { for (const s of listeners.values()) if (s.size) return true; return false; };\n"
         "  const emit = (name, payload) => { const s = listeners.get(name); if (s) for (const h of s) { try { h({ event: name, payload }); } catch {} } };\n"
         "  window.__FOLIO_EMIT__ = emit;\n"
         "  async function drain() {\n"
-        "    if (!listeners.size) { if (timer) { clearInterval(timer); timer = 0; } return; }\n"
+        "    if (!hasListeners()) { if (timer) { clearInterval(timer); timer = 0; } return; }\n"
         "    try {\n"
         "      const r = await _fetch(FOLIO_LOCALD_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Folio-Token': FOLIO_TOKEN }, body: _jsonStringify({ command: 'poll_events', args: {} }) });\n"
         "      const b = await r.json();\n"
         "      if (Array.isArray(b.result)) for (const ev of b.result) { if (typeof ev.event === 'string') emit(ev.event, ev.payload); }\n"
         "    } catch {}\n"
+        "  }\n"
+        "  function stopStream() {\n"
+        "    if (es) { try { es.close(); } catch {} es = null; }\n"
+        "    if (timer) { clearInterval(timer); timer = 0; }\n"
+        "  }\n"
+        "  function startStream() {\n"
+        "    if (es || timer) return;\n"
+        "    if (typeof _EventSource === 'function') {\n"
+        "      try {\n"
+        "        es = new _EventSource(FOLIO_LOCALD_BASE + '/__folio_events?token=' + encodeURIComponent(FOLIO_TOKEN));\n"
+        "        es.onmessage = (msg) => {\n"
+        "          try {\n"
+        "            const ev = JSON.parse(msg.data);\n"
+        "            if (ev && typeof ev.event === 'string') emit(ev.event, ev.payload);\n"
+        "          } catch {}\n"
+        "        };\n"
+        "        es.onerror = () => {\n"
+        "          if (es && es.readyState === 2) { stopStream(); if (hasListeners() && !timer) timer = setInterval(drain, 350); }\n"
+        "        };\n"
+        "        return;\n"
+        "      } catch { es = null; }\n"
+        "    }\n"
+        "    timer = setInterval(drain, 350);\n"
         "  }\n"
         "  async function invoke(command, args = {}) {\n"
         "    let r; for (let i = 0; ; i++) {\n"
@@ -110,7 +137,8 @@ static char *build_init_script(unsigned port, const char *token) {
         "  }\n"
         "  async function listen(n, h) {\n"
         "    if (!listeners.has(n)) listeners.set(n, new Set());\n"
-        "    listeners.get(n).add(h); if (!timer) timer = setInterval(drain, 350); return () => listeners.get(n)?.delete(h);\n"
+        "    listeners.get(n).add(h); startStream();\n"
+        "    return () => { listeners.get(n)?.delete(h); if (!hasListeners()) stopStream(); };\n"
         "  }\n"
         "  window.__TAURI_INTERNALS__ = { invoke };\n"
         "  window.__FOLIO_DESKTOP__ = window.__ORB_DESKTOP__ = window.__TAURI__ = {\n"
@@ -170,6 +198,7 @@ int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--self-test") == 0) {
         int ok = strstr(init_js, "__FOLIO_DESKTOP__") != NULL &&
                  strstr(init_js, "const _fetch = window.fetch.bind(window)") != NULL &&
+                 strstr(init_js, "/__folio_events?token=") != NULL &&
                  is_confined_shell_uri("http://127.0.0.1:19485/") &&
                  is_confined_shell_uri("http://localhost:1435/?open=kp-123") &&
                  !is_confined_shell_uri("http://127.0.0.1:80@evil.com/") &&
@@ -182,15 +211,22 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    struct sigaction sa_ign;
+    memset(&sa_ign, 0, sizeof(sa_ign));
+    sa_ign.sa_handler = SIG_IGN;
+    sigaction(SIGHUP, &sa_ign, NULL);
+
     pid_t locald_pid = -1;
     const char *locald_bin = getenv("FOLIO_LOCALD_BIN");
     if (locald_bin && *locald_bin && (locald_pid = fork()) == 0) {
+        setsid();
         static const char *const keep[] = {
             "HOME", "PATH", "TMPDIR", "USER", "LANG",
             "XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR",
             "DBUS_SESSION_BUS_ADDRESS",
             "FOLIO_STATE_DIR", "FOLIO_UI_ROOT", "FOLIO_DEFAULT_NOTES_DIR", "FOLIO_NOTES_DIRS",
             "FOLIO_SECRETS_DIR", "FOLIO_THEME_MODE", "FOLIO_HINDSIGHT_URL", "FOLIO_DEFAULT_BANK",
+            "FOLIO_INITIAL_QUERY",
             "HINDSIGHT_API_URL", "HINDSIGHT_BASE_URL", "HINDSIGHT_BANK_ID", "HINDSIGHT_API_KEY", "HINDSIGHT_API_KEY_FILE",
             "SPARK_MEMORY_API_TOKEN", "SPARK_MEMORY_API_TOKEN_FILE",
             "FOLIO_HINDSIGHT_READONLY",
@@ -213,6 +249,28 @@ int main(int argc, char **argv) {
         envp[n] = NULL;
         execle(locald_bin, locald_bin, (char *)NULL, envp);
         _exit(127);
+    }
+
+    if (locald_pid > 0) {
+        struct sockaddr_in sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sin_family = AF_INET;
+        sa.sin_port = htons((uint16_t)port);
+        sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        for (int attempt = 0; attempt < 150; ++attempt) {
+            int s = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+            if (s >= 0) {
+                int rc = connect(s, (struct sockaddr *)&sa, sizeof(sa));
+                close(s);
+                if (rc == 0) break;
+            }
+            if (waitpid(locald_pid, NULL, WNOHANG) == locald_pid) {
+                locald_pid = -1;
+                break;
+            }
+            struct timespec ts = { 0, 20 * 1000 * 1000L };
+            nanosleep(&ts, NULL);
+        }
     }
 
 #if defined(FOLIO_HAS_WEBKITGTK)
@@ -251,6 +309,21 @@ int main(int argc, char **argv) {
     gtk_window_set_geometry_hints(GTK_WINDOW(win), NULL, &geom, GDK_HINT_MIN_SIZE);
     g_signal_connect(win, "destroy", G_CALLBACK(gtk_main_quit), NULL);
 
+    WebKitMemoryPressureSettings *mps = webkit_memory_pressure_settings_new();
+    webkit_memory_pressure_settings_set_memory_limit(mps, 512);
+    webkit_memory_pressure_settings_set_conservative_threshold(mps, 0.35);
+    webkit_memory_pressure_settings_set_strict_threshold(mps, 0.60);
+    webkit_memory_pressure_settings_set_kill_threshold(mps, 0.0);
+    webkit_website_data_manager_set_memory_pressure_settings(mps);
+    WebKitWebsiteDataManager *wdm = webkit_website_data_manager_new(NULL);
+    WebKitWebContext *wctx = g_object_new(WEBKIT_TYPE_WEB_CONTEXT,
+        "website-data-manager", wdm,
+        "memory-pressure-settings", mps,
+        NULL);
+    webkit_memory_pressure_settings_free(mps);
+    webkit_web_context_set_cache_model(wctx, WEBKIT_CACHE_MODEL_DOCUMENT_BROWSER);
+    g_object_unref(wdm);
+
     WebKitSettings *wks = webkit_settings_new();
     webkit_settings_set_hardware_acceleration_policy(wks, WEBKIT_HARDWARE_ACCELERATION_POLICY_ALWAYS);
 
@@ -262,10 +335,14 @@ int main(int argc, char **argv) {
     webkit_user_script_unref(script);
 
     GtkWidget *wv = g_object_new(WEBKIT_TYPE_WEB_VIEW,
+        "web-context", wctx,
         "settings", wks,
         "user-content-manager", ucm,
         "is-ephemeral", FALSE,
         NULL);
+    g_object_unref(wctx);
+    g_object_unref(wks);
+    g_object_unref(ucm);
     {
         GdkRGBA clear = { 0, 0, 0, 0 };
         webkit_web_view_set_background_color(WEBKIT_WEB_VIEW(wv), &clear);
