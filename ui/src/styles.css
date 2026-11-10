@@ -507,30 +507,111 @@ select:focus:not(:focus-visible) {
 
 .section {
   color: var(--fg-3);
-  font-size: 11px;
-  padding: 0 6px 0 10px;
-  margin: 14px 0 4px;
+  font-size: 11.5px;
+  padding: 0 4px 0 2px;
+  margin: 12px 0 3px;
 }
 
 .section-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
+  gap: 4px;
 }
 
-.section-add {
-  width: 18px;
-  height: 18px;
-  border-radius: var(--radius-xs);
+.provider-section + .provider-section {
+  margin-top: 2px;
+}
+
+.provider-toggle {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 6px 0 4px;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-3);
+  font-size: 11.5px;
+  font-weight: 500;
+  text-align: left;
+  transition:
+    background 90ms ease,
+    color 90ms ease;
+}
+
+.provider-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+
+.provider-chevron {
+  width: 12px;
+  height: 12px;
   display: grid;
   place-items: center;
   color: var(--fg-4);
+  flex: none;
 }
 
-.section-add:hover {
+.provider-toggle:hover .provider-chevron {
+  color: var(--fg-3);
+}
+
+.provider-ico {
+  width: 15px;
+  height: 15px;
+  display: grid;
+  place-items: center;
+  color: var(--fg-3);
+  flex: none;
+}
+
+.provider-toggle:hover .provider-ico {
+  color: var(--fg-2);
+}
+
+.provider-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-actions {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.section-add {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-xs);
+  display: grid;
+  place-items: center;
+  color: var(--fg-3);
+}
+
+.section-add:hover:not(:disabled) {
   background: var(--bg-active);
   color: var(--fg);
+}
+
+.section-add:disabled {
+  opacity: 0.55;
+}
+
+@keyframes folio-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.section-add.spinning svg {
+  animation: folio-spin 0.85s linear infinite;
 }
 
 .sb-title-with-dot {
@@ -541,8 +622,8 @@ select:focus:not(:focus-visible) {
 }
 
 .m-dot {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   flex: none;
   background: var(--fg-4);
@@ -553,7 +634,8 @@ select:focus:not(:focus-visible) {
 }
 
 .m-dot.offline {
-  background: var(--amber);
+  background: var(--fg-4);
+  opacity: 0.65;
 }
 
 .ro-chip {

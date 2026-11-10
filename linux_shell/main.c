@@ -230,7 +230,8 @@ int main(int argc, char **argv) {
             "HINDSIGHT_API_URL", "HINDSIGHT_BASE_URL", "HINDSIGHT_BANK_ID", "HINDSIGHT_API_KEY", "HINDSIGHT_API_KEY_FILE",
             "SPARK_MEMORY_API_TOKEN", "SPARK_MEMORY_API_TOKEN_FILE",
             "FOLIO_HINDSIGHT_READONLY",
-            "NOTION_API_KEY", "NOTION_API_KEY_FILE",
+            "NOTION_API_KEY", "NOTION_API_KEY_FILE", "NOTION_API_TOKEN", "NOTION_API_TOKEN_FILE",
+            "NOTION_API_KEY_PERSO", "NOTION_API_KEY_PERSO_FILE",
             "SSL_CERT_FILE", "SSL_CERT_DIR", "NIX_SSL_CERT_FILE"
         };
         enum { KEEP_COUNT = sizeof(keep) / sizeof(keep[0]) };

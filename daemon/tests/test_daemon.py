@@ -244,6 +244,19 @@ class MockRemoteApisTest(unittest.TestCase):
         self.assertIn("$$\n\\int_0^1 x^2 dx = \\frac{1}{3}\n$$", joined)
         self.assertIn("- [x] Done", joined)
 
+        entries = [
+            {"id": "p-root", "title": "Engineering", "object": "page", "parent_id": None},
+            {"id": "p-child", "title": "Roadmap", "object": "page", "parent_id": "p-root"},
+            {"id": "db-1", "title": "Tasks", "object": "database", "parent_id": None},
+        ]
+        nodes = NotionProvider._build_workspace_nodes("perso", entries)
+        self.assertEqual(len(nodes), 2)
+        self.assertEqual(nodes[0].name, "Engineering")
+        self.assertEqual(nodes[0].kind, "folder")
+        self.assertEqual(len(nodes[0].children), 1)
+        self.assertEqual(nodes[0].children[0].uri, "notion://perso/p-child")
+        self.assertEqual(nodes[1].badge, "DB")
+
 
 class HttpServerAndSseTest(unittest.TestCase):
     def test_static_cache_headers_wasm_mime_and_race_free_sse(self) -> None:

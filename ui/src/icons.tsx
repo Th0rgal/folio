@@ -150,3 +150,31 @@ export const CheckIcon = (p: IconProps) => (
     <path d="M3.2 8.4 6.5 11.6 12.8 4.6" />
   </I>
 );
+
+export const LocalNotesIcon = (p: IconProps) => (
+  <I size={14} sw={1.2} {...p}>
+    <path d="M2.3 4.4a1.25 1.25 0 0 1 1.25-1.25h2.7l1.3 1.45h4.9a1.25 1.25 0 0 1 1.25 1.25v5.45a1.25 1.25 0 0 1-1.25 1.25h-8.9A1.25 1.25 0 0 1 2.3 11.3z" />
+    <path d="M5.2 8.8h5.6" />
+  </I>
+);
+
+export const HindsightIcon = (p: IconProps) => (
+  <I size={14} sw={1.2} {...p}>
+    <path d="M8 2.2 13.3 8 8 13.8 2.7 8z" />
+    <circle cx="8" cy="8" r="1.55" />
+  </I>
+);
+
+export const NotionIcon = (p: IconProps) => (
+  <I size={14} sw={1.2} {...p}>
+    <rect x="2.6" y="2.6" width="10.8" height="10.8" rx="2.2" />
+    <path d="M5.75 10.65V5.35l4.5 5.3V5.35" />
+  </I>
+);
+
+export const RefreshIcon = (p: IconProps) => (
+  <I size={13} sw={1.25} {...p}>
+    <path d="M12.9 3.9v3h-3" />
+    <path d="M12.5 6.9a4.65 4.65 0 1 0 .35 2.45" />
+  </I>
+);

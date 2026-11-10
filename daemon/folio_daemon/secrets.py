@@ -9,13 +9,15 @@ from typing import Optional
 SECRET_ENV_MAP: dict[str, tuple[str, ...]] = {
     "hindsight_api_key": ("HINDSIGHT_API_KEY",),
     "spark_memory_api_token": ("SPARK_MEMORY_API_TOKEN",),
-    "notion_api_key": ("NOTION_API_KEY",),
+    "notion_api_key": ("NOTION_API_KEY", "NOTION_API_TOKEN"),
+    "notion_api_key_perso": ("NOTION_API_KEY_PERSO",),
 }
 
 SECRET_FILE_ENV_MAP: dict[str, tuple[str, ...]] = {
     "hindsight_api_key": ("FOLIO_HINDSIGHT_KEY_FILE", "HINDSIGHT_API_KEY_FILE"),
     "spark_memory_api_token": ("FOLIO_SPARK_MEMORY_TOKEN_FILE", "SPARK_MEMORY_API_TOKEN_FILE"),
-    "notion_api_key": ("FOLIO_NOTION_KEY_FILE", "NOTION_API_KEY_FILE"),
+    "notion_api_key": ("FOLIO_NOTION_KEY_FILE", "NOTION_API_KEY_FILE", "NOTION_API_TOKEN_FILE"),
+    "notion_api_key_perso": ("FOLIO_NOTION_PERSO_KEY_FILE", "NOTION_API_KEY_PERSO_FILE"),
 }
 
 

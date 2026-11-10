@@ -73,5 +73,6 @@ describe("Orb-matched keyboard shortcuts", () => {
     expect(historyNavDelta(ev({ key: "]", code: "BracketRight", metaKey: true }), false)).toBe(1);
     expect(sidebarSectionShortcut(ev({ key: "1", code: "Digit1", metaKey: true }), false)).toBe("local");
     expect(sidebarSectionShortcut(ev({ key: "2", code: "Digit2", metaKey: true }), false)).toBe("hindsight");
+    expect(sidebarSectionShortcut(ev({ key: "3", code: "Digit3", metaKey: true }), false)).toBe("notion");
   });
 });

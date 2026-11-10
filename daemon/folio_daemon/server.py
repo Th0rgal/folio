@@ -295,7 +295,7 @@ class FolioEngine:
         if command == "set_session_credential":
             name = str(args.get("name") or "")
             value = str(args.get("value") or "")
-            if name not in ("hindsight_api_key", "spark_memory_api_token", "notion_api_key"):
+            if name not in ("hindsight_api_key", "spark_memory_api_token", "notion_api_key", "notion_api_key_perso"):
                 raise ValueError(f"Unsupported credential slot: {name}")
             self.secrets.set_ephemeral(name, value)
             self.hindsight._banks_cache = None

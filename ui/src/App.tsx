@@ -137,6 +137,14 @@ function readStoredSidebarOpen(): boolean {
   }
 }
 
+function readStoredSectionOpen(id: "local" | "hindsight" | "notion"): boolean {
+  try {
+    return window.localStorage?.getItem(`folio:sec:${id}`) !== "0";
+  } catch {
+    return true;
+  }
+}
+
 function firstDocumentUri(nodes: TreeNode[]): string | null {
   for (const n of nodes) {
     if (n.uri) return n.uri;
@@ -150,8 +158,15 @@ export function App() {
   const initParams = parseInitialParams();
   const [boot, setBoot] = createSignal<BootstrapPayload | null>(null);
   const [localTree, setLocalTree] = createSignal<TreeNode[]>([]);
-  const [hindsightTree, setHindsightTree] = createSignal<TreeNode[]>([]);
+  const [bankTrees, setBankTrees] = createSignal<Record<string, TreeNode[] | undefined>>({});
+  const [loadingBanks, setLoadingBanks] = createSignal<Record<string, boolean>>({});
   const [notionTree, setNotionTree] = createSignal<TreeNode[]>([]);
+  const [notionSyncing, setNotionSyncing] = createSignal(false);
+  const [sectionOpen, setSectionOpen] = createSignal({
+    local: readStoredSectionOpen("local"),
+    hindsight: readStoredSectionOpen("hindsight"),
+    notion: readStoredSectionOpen("notion"),
+  });
   const [activeBank, setActiveBank] = createSignal("thomas");
   const [doc, setDoc] = createSignal<DocumentRecord | null>(null);
   const [draftMarkdown, setDraftMarkdown] = createSignal("");
@@ -197,6 +212,19 @@ export function App() {
     setSidebarVisible(!sidebarOpen());
   };
 
+  const setProviderSectionOpen = (id: "local" | "hindsight" | "notion", next: boolean) => {
+    setSectionOpen((prev) => ({ ...prev, [id]: next }));
+    try {
+      window.localStorage?.setItem(`folio:sec:${id}`, next ? "1" : "0");
+    } catch {
+      // ignore storage errors
+    }
+  };
+
+  const toggleProviderSection = (id: "local" | "hindsight" | "notion") => {
+    setProviderSectionOpen(id, !sectionOpen()[id]);
+  };
+
   const startSidebarResize = (e: PointerEvent) => {
     e.preventDefault();
     document.body.classList.add("resizing");
@@ -236,10 +264,16 @@ export function App() {
       setErrorBanner(null);
       setSelectedMath(null);
       const bank = bankOverride || activeBank();
+      if (bankOverride && bankOverride !== activeBank()) {
+        setActiveBank(bankOverride);
+      }
       const loaded = await rpcInvoke<DocumentRecord>("open_document", {
         uri: uriOrId,
         bank_id: bank,
       });
+      if (loaded.provider === "hindsight" && loaded.provenance.bank_id) {
+        setActiveBank(loaded.provenance.bank_id);
+      }
       setDoc(loaded);
       setDraftMarkdown(loaded.raw_markdown);
       setDirty(false);
@@ -268,20 +302,40 @@ export function App() {
     setHIdx(nextPos);
     if (entry.bank !== activeBank()) {
       setActiveBank(entry.bank);
-      void refreshHindsightTree(entry.bank);
+      void ensureBankTreeLoaded(entry.bank);
     }
     void openDocument(entry.uri, entry.bank, false);
   };
 
-  const refreshHindsightTree = async (bankId: string) => {
+  const refreshBankTree = async (bankId: string) => {
+    setLoadingBanks((prev) => ({ ...prev, [bankId]: true }));
     try {
       const tree = await rpcInvoke<TreeNode[]>("list_tree", {
         provider: "hindsight",
         scope: bankId,
       });
-      setHindsightTree(tree);
+      setBankTrees((prev) => ({ ...prev, [bankId]: tree }));
     } catch {
-      setHindsightTree([]);
+      setBankTrees((prev) => ({ ...prev, [bankId]: [] }));
+    } finally {
+      setLoadingBanks((prev) => ({ ...prev, [bankId]: false }));
+    }
+  };
+
+  const ensureBankTreeLoaded = async (bankId: string) => {
+    if (bankTrees()[bankId] !== undefined || loadingBanks()[bankId]) return;
+    await refreshBankTree(bankId);
+  };
+
+  const handleSyncNotion = async () => {
+    setNotionSyncing(true);
+    try {
+      const res = await rpcInvoke<{ tree: TreeNode[] }>("notion_sync", { limit: 24 });
+      setNotionTree(res.tree || []);
+    } catch (err) {
+      setErrorBanner(err instanceof Error ? err.message : String(err));
+    } finally {
+      setNotionSyncing(false);
     }
   };
 
@@ -289,7 +343,15 @@ export function App() {
     void rpcInvoke<TreeNode[]>("list_tree", { provider: "local-fs" })
       .then(setLocalTree)
       .catch(() => undefined);
-    void refreshHindsightTree(activeBank());
+    const loadedBankIds = Object.keys(bankTrees());
+    for (const bId of loadedBankIds.length ? loadedBankIds : [activeBank()]) {
+      void refreshBankTree(bId);
+    }
+    if (boot()?.providers.notion?.connected) {
+      void rpcInvoke<TreeNode[]>("list_tree", { provider: "notion" })
+        .then(setNotionTree)
+        .catch(() => undefined);
+    }
     const cur = doc();
     if (cur && !dirty() && cur.provider !== "local-fs") {
       await openDocument(cur.uri, activeBank(), false);
@@ -484,6 +546,7 @@ export function App() {
       if (sectionTarget) {
         e.preventDefault();
         setSidebarVisible(true);
+        setProviderSectionOpen(sectionTarget, true);
         requestAnimationFrame(() => {
           const region = document.querySelector<HTMLElement>(
             `[data-section="${sectionTarget}"] button.row:not(:disabled)`,
@@ -499,7 +562,8 @@ export function App() {
         const data = await rpcInvoke<BootstrapPayload>("get_bootstrap", {});
         setBoot(data);
         setLocalTree(data.local_tree || []);
-        setActiveBank(data.active_bank || "thomas");
+        const defaultBank = data.active_bank || "thomas";
+        setActiveBank(defaultBank);
         if (data.macros) setMacros(data.macros);
         if (
           !initParams.themeOverride &&
@@ -508,14 +572,25 @@ export function App() {
           applyThemeToDom(data.omarchy_mode);
         }
 
-        void refreshHindsightTree(data.active_bank || "thomas");
+        void refreshBankTree(defaultBank).then(() => {
+          for (const b of data.banks || []) {
+            if (b.bank_id && b.bank_id !== defaultBank) {
+              void ensureBankTreeLoaded(b.bank_id);
+            }
+          }
+        });
+
         if (data.providers.notion?.connected) {
-          void rpcInvoke<TreeNode[]>("list_tree", { provider: "notion" }).then(setNotionTree);
+          setNotionSyncing(true);
+          void rpcInvoke<TreeNode[]>("list_tree", { provider: "notion" })
+            .then(setNotionTree)
+            .catch(() => undefined)
+            .finally(() => setNotionSyncing(false));
         }
 
         const initialTarget = initParams.openUri || firstDocumentUri(data.local_tree || []);
         if (initialTarget) {
-          await openDocument(initialTarget, data.active_bank || "thomas");
+          await openDocument(initialTarget, defaultBank);
         }
       } catch (err) {
         setErrorBanner(err instanceof Error ? err.message : String(err));
@@ -644,29 +719,27 @@ export function App() {
 
       <Sidebar
         localTree={localTree()}
-        hindsightTree={hindsightTree()}
+        bankTrees={bankTrees()}
+        loadingBanks={loadingBanks()}
         notionTree={notionTree()}
+        notionSyncing={notionSyncing()}
         activeUri={doc()?.uri ?? null}
         activeBank={activeBank()}
+        defaultBank={boot()?.active_bank || "thomas"}
         banks={boot()?.banks || []}
         hindsightStatus={boot()?.providers.hindsight}
         notionStatus={boot()?.providers.notion}
+        sectionOpen={sectionOpen()}
+        onToggleSection={toggleProviderSection}
         themeMode={themeMode()}
         onToggleTheme={() => applyThemeToDom(themeMode() === "dark" ? "light" : "dark")}
         onStartResize={startSidebarResize}
-        onSelectUri={(u) => void openDocument(u)}
-        onChangeBank={(b) => {
-          setActiveBank(b);
-          void refreshHindsightTree(b);
-        }}
+        onSelectUri={(u, bankId) => void openDocument(u, bankId)}
+        onEnsureBankLoaded={(bankId) => void ensureBankTreeLoaded(bankId)}
         onNewNote={() => void handleCreateNote()}
         onOpenSearch={() => setSearchOpen(true)}
         onOpenMountDialog={() => setMountModalOpen(true)}
-        onSyncNotion={() => {
-          void rpcInvoke<{ tree: TreeNode[] }>("notion_sync", { limit: 20 }).then((r) =>
-            setNotionTree(r.tree || []),
-          );
-        }}
+        onSyncNotion={() => void handleSyncNotion()}
       />
 
       {/* Unified Orb Titlebar */}
@@ -876,7 +949,9 @@ export function App() {
                         <span class="prov-dot" />
                         {d().provenance.is_agent_summary
                           ? "Agent summary · Knowledge Page"
-                          : `Human · ${d().provenance.author || "thomas"}`}
+                          : d().provider === "notion"
+                            ? `Notion · ${d().provenance.author || "Workspace"}`
+                            : `Human · ${d().provenance.author || "thomas"}`}
                       </span>
 
                       <Show

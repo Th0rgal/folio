@@ -34,6 +34,7 @@ export const SHORTCUT_LABELS = {
   refresh: "⌘R",
   localSection: "⌘1",
   hindsightSection: "⌘2",
+  notionSection: "⌘3",
 } as const;
 
 export function isMacKeyboardPlatform(): boolean {
@@ -126,14 +127,15 @@ export function historyNavDelta(event: KeyEventLike, macOnly?: boolean): -1 | 1 
   return 0;
 }
 
-/** Command-1 (`⌘1`) / Command-2 (`⌘2`): Jump sidebar focus to Local notes / Hindsight. */
+/** Command-1 (`⌘1`) / Command-2 (`⌘2`) / Command-3 (`⌘3`): Jump sidebar focus to Local / Hindsight / Notion. */
 export function sidebarSectionShortcut(
   event: KeyEventLike,
   macOnly?: boolean,
-): "local" | "hindsight" | null {
+): "local" | "hindsight" | "notion" | null {
   if (event.isComposing || event.defaultPrevented || event.altKey || event.shiftKey) return null;
   if (!hasPrimaryModifier(event, macOnly)) return null;
   if (event.code === "Digit1" || event.key === "1") return "local";
   if (event.code === "Digit2" || event.key === "2") return "hindsight";
+  if (event.code === "Digit3" || event.key === "3") return "notion";
   return null;
 }
