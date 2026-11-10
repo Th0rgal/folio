@@ -90,7 +90,33 @@ export function Sidebar(props: {
     <aside id="folio-sidebar" class="sidebar" data-testid="sidebar">
       <div class="sb-top" />
 
-      <nav class="sb-scroll" onContextMenu={(e) => e.preventDefault()}>
+      <nav
+        class="sb-scroll"
+        data-sidebar-nav
+        onContextMenu={(e) => e.preventDefault()}
+        onKeyDown={(event) => {
+          if (
+            event.defaultPrevented ||
+            !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key) ||
+            (event.target as HTMLElement).matches("input,textarea,select,[contenteditable]")
+          ) {
+            return;
+          }
+          const rows = Array.from(
+            event.currentTarget.querySelectorAll<HTMLButtonElement>("button.row:not(:disabled)"),
+          ).filter((row) => row.getClientRects().length > 0);
+          if (!rows.length) return;
+          event.preventDefault();
+          const current = rows.indexOf(document.activeElement as HTMLButtonElement);
+          const next =
+            event.key === "Home"
+              ? 0
+              : event.key === "End"
+                ? rows.length - 1
+                : (current + (event.key === "ArrowDown" ? 1 : -1) + rows.length) % rows.length;
+          rows[next].focus();
+        }}
+      >
         <div class="sb-main-nav">
           <button type="button" class="row" onClick={props.onNewNote}>
             <span class="row-ico">
@@ -110,7 +136,7 @@ export function Sidebar(props: {
               <Ic.SearchIcon />
             </span>
             <span class="row-label">Search & Recall</span>
-            <kbd>⌘K</kbd>
+            <kbd>⌘⇧F</kbd>
           </button>
 
           {/* Local Workspace Section */}
@@ -127,7 +153,7 @@ export function Sidebar(props: {
             </button>
           </div>
 
-          <div class="group">
+          <div class="group" data-section="local">
             <For each={props.localTree}>
               {(node) => (
                 <TreeBranch
@@ -172,7 +198,7 @@ export function Sidebar(props: {
             </select>
           </div>
 
-          <div class="group" data-testid="hindsight-tree">
+          <div class="group" data-section="hindsight" data-testid="hindsight-tree">
             <Show
               when={props.hindsightTree.length > 0}
               fallback={

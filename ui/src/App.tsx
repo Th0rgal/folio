@@ -1,9 +1,24 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { EquationPopover } from "./EquationPopover";
+import { FindBar } from "./FindBar";
 import { MarkdownView } from "./MarkdownView";
 import { SearchModal } from "./SearchModal";
 import { Sidebar } from "./Sidebar";
 import * as Ic from "./icons";
+import {
+  SHORTCUT_LABELS,
+  historyNavDelta,
+  isFindShortcut,
+  isFocusModeShortcut,
+  isNewNoteShortcut,
+  isRefreshShortcut,
+  isSaveShortcut,
+  isSearchShortcut,
+  isSidebarShortcut,
+  isToggleSourceShortcut,
+  isToggleSplitShortcut,
+  sidebarSectionShortcut,
+} from "./keyboardShortcuts";
 import { applyMathEdit, extractMathSpans } from "./mathParser";
 import { detectPlatform, listenDesktopEvent, rpcInvoke } from "./rpc";
 import type {
@@ -14,6 +29,11 @@ import type {
   TreeNode,
   ViewMode,
 } from "./types";
+
+interface HistoryEntry {
+  uri: string;
+  bank: string;
+}
 
 function parseInitialParams(): {
   openUri: string | null;
@@ -69,6 +89,8 @@ export function App() {
   const [sidebarOpen, setSidebarOpen] = createSignal(true);
   const [sbWidth, setSbWidth] = createSignal(248);
   const [themeMode, setThemeMode] = createSignal<ThemeMode>(initParams.themeOverride || "dark");
+  const [history, setHistory] = createSignal<HistoryEntry[]>([]);
+  const [hIdx, setHIdx] = createSignal(-1);
   const [macros, setMacros] = createSignal<Record<string, string>>({
     "\\R": "\\mathbb{R}",
     "\\E": "\\mathbb{E}",
@@ -84,6 +106,7 @@ export function App() {
 
   let saveTimer: number | undefined;
   let composingInEditor = false;
+  let preFocusSnapshot: { sidebar: boolean; mode: ViewMode } | null = null;
 
   const startSidebarResize = (e: PointerEvent) => {
     e.preventDefault();
@@ -104,17 +127,36 @@ export function App() {
     void rpcInvoke("set_window_theme", { theme: mode }).catch(() => undefined);
   };
 
-  const openDocument = async (uriOrId: string, bankOverride?: string) => {
+  const pushHistory = (entry: HistoryEntry) => {
+    const curList = history();
+    const curPos = hIdx();
+    const active = curPos >= 0 ? curList[curPos] : undefined;
+    if (active && active.uri === entry.uri && active.bank === entry.bank) return;
+    const trimmed = curPos >= 0 ? curList.slice(0, curPos + 1) : [];
+    trimmed.push(entry);
+    setHistory(trimmed);
+    setHIdx(trimmed.length - 1);
+  };
+
+  const openDocument = async (
+    uriOrId: string,
+    bankOverride?: string,
+    recordHistory = true,
+  ) => {
     try {
       setErrorBanner(null);
       setSelectedMath(null);
+      const bank = bankOverride || activeBank();
       const loaded = await rpcInvoke<DocumentRecord>("open_document", {
         uri: uriOrId,
-        bank_id: bankOverride || activeBank(),
+        bank_id: bank,
       });
       setDoc(loaded);
       setDraftMarkdown(loaded.raw_markdown);
       setDirty(false);
+      if (recordHistory) {
+        pushHistory({ uri: loaded.uri, bank });
+      }
 
       if (initParams.openEqIndex !== null) {
         const spans = extractMathSpans(loaded.raw_markdown);
@@ -129,6 +171,19 @@ export function App() {
     }
   };
 
+  const navHistory = (delta: -1 | 1) => {
+    const nextPos = hIdx() + delta;
+    const list = history();
+    if (nextPos < 0 || nextPos >= list.length) return;
+    const entry = list[nextPos];
+    setHIdx(nextPos);
+    if (entry.bank !== activeBank()) {
+      setActiveBank(entry.bank);
+      void refreshHindsightTree(entry.bank);
+    }
+    void openDocument(entry.uri, entry.bank, false);
+  };
+
   const refreshHindsightTree = async (bankId: string) => {
     try {
       const tree = await rpcInvoke<TreeNode[]>("list_tree", {
@@ -138,6 +193,17 @@ export function App() {
       setHindsightTree(tree);
     } catch {
       setHindsightTree([]);
+    }
+  };
+
+  const handleRefreshAll = async () => {
+    void rpcInvoke<TreeNode[]>("list_tree", { provider: "local-fs" })
+      .then(setLocalTree)
+      .catch(() => undefined);
+    void refreshHindsightTree(activeBank());
+    const cur = doc();
+    if (cur && !dirty() && cur.provider !== "local-fs") {
+      await openDocument(cur.uri, activeBank(), false);
     }
   };
 
@@ -172,6 +238,18 @@ export function App() {
     }, 420);
   };
 
+  const toggleFocusMode = () => {
+    if (!sidebarOpen() && preFocusSnapshot) {
+      setSidebarOpen(preFocusSnapshot.sidebar);
+      setViewMode(preFocusSnapshot.mode);
+      preFocusSnapshot = null;
+      return;
+    }
+    preFocusSnapshot = { sidebar: sidebarOpen(), mode: viewMode() };
+    setSidebarOpen(false);
+    setViewMode("preview");
+  };
+
   onMount(() => {
     document.documentElement.dataset.platform = detectPlatform();
 
@@ -204,40 +282,124 @@ export function App() {
       unlistenWorkspace = fn;
     });
 
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.isComposing) return;
-      const primary = e.metaKey || e.ctrlKey;
-      if (!primary) return;
+    // When the user selects non-editable DOM text while an input/textarea retains focus with no
+    // text selected inside it, blur the input so WebKit/WebKitGTK routes Cmd/Ctrl+C to the selection.
+    const onSelectionChange = () => {
+      const active = document.activeElement;
+      if (!(active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement)) return;
+      if ((active.selectionStart ?? 0) !== (active.selectionEnd ?? 0)) return;
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || !sel.anchorNode || active.contains(sel.anchorNode)) return;
+      active.blur();
+    };
+    document.addEventListener("selectionchange", onSelectionChange);
 
-      const k = e.key.toLowerCase();
-      if (k === "k" && !e.shiftKey && !e.altKey) {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.isComposing) return;
+
+      const sidebarFocused =
+        isFindShortcut(e) &&
+        Boolean(document.getElementById("folio-sidebar")?.contains(document.activeElement));
+
+      // Orb global Search & Recall: ⌘⇧F (or ⌘F when focus is in the sidebar)
+      if (isSearchShortcut(e) || sidebarFocused) {
         e.preventDefault();
-        setSearchOpen((v) => !v);
+        if (searchOpen()) {
+          const el = document.querySelector<HTMLInputElement>('[data-testid="search-input"]');
+          el?.focus({ preventScroll: true });
+          el?.select();
+          return;
+        }
+        if (!mountModalOpen()) {
+          setSearchOpen(true);
+        }
         return;
       }
-      if ((e.key === "/" || e.code === "Slash") && !e.altKey) {
+
+      if (isRefreshShortcut(e)) {
         e.preventDefault();
-        setViewMode((prev) =>
-          prev === "preview" ? "split" : prev === "split" ? "source" : "preview",
-        );
+        void handleRefreshAll();
         return;
       }
-      if (k === "\\" && !e.altKey) {
+
+      if (searchOpen() || mountModalOpen()) {
+        if (e.key === "Escape" && mountModalOpen()) {
+          e.preventDefault();
+          setMountModalOpen(false);
+        }
+        return;
+      }
+
+      if (e.key === "Escape") {
+        if (sidebarOpen() && window.matchMedia?.("(max-width: 720px)").matches) {
+          e.preventDefault();
+          setSidebarOpen(false);
+          return;
+        }
+        if (selectedMath()) {
+          e.preventDefault();
+          setSelectedMath(null);
+          return;
+        }
+      }
+
+      if (isToggleSourceShortcut(e)) {
         e.preventDefault();
+        setViewMode((prev) => (prev === "source" ? "preview" : "source"));
+        return;
+      }
+
+      if (isToggleSplitShortcut(e)) {
+        e.preventDefault();
+        setViewMode((prev) => (prev === "split" ? "preview" : "split"));
+        return;
+      }
+
+      if (isSidebarShortcut(e)) {
+        e.preventDefault();
+        preFocusSnapshot = null;
         setSidebarOpen((v) => !v);
         return;
       }
-      if (k === "n" && !e.shiftKey && !e.altKey) {
+
+      if (isFocusModeShortcut(e)) {
+        e.preventDefault();
+        toggleFocusMode();
+        return;
+      }
+
+      if (isNewNoteShortcut(e)) {
         e.preventDefault();
         void handleCreateNote();
         return;
       }
-      if (k === "s" && !e.shiftKey && !e.altKey) {
+
+      if (isSaveShortcut(e)) {
         const cur = doc();
         if (cur && !cur.readonly && cur.provider === "local-fs") {
           e.preventDefault();
           void flushSave(cur.uri, draftMarkdown());
         }
+        return;
+      }
+
+      const delta = historyNavDelta(e);
+      if (delta !== 0) {
+        e.preventDefault();
+        navHistory(delta);
+        return;
+      }
+
+      const sectionTarget = sidebarSectionShortcut(e);
+      if (sectionTarget) {
+        e.preventDefault();
+        setSidebarOpen(true);
+        requestAnimationFrame(() => {
+          const region = document.querySelector<HTMLElement>(
+            `[data-section="${sectionTarget}"] button.row:not(:disabled)`,
+          );
+          region?.focus();
+        });
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -272,6 +434,7 @@ export function App() {
 
     onCleanup(() => {
       mql?.removeEventListener?.("change", onMqlChange);
+      document.removeEventListener("selectionchange", onSelectionChange);
       window.removeEventListener("keydown", onKeyDown);
       unlistenTheme?.();
       unlistenWorkspace?.();
@@ -306,6 +469,7 @@ export function App() {
       setDoc(created);
       setDraftMarkdown(created.raw_markdown);
       setDirty(false);
+      pushHistory({ uri: created.uri, bank: activeBank() });
       setViewMode("split");
     } catch (err) {
       setErrorBanner(err instanceof Error ? err.message : String(err));
@@ -399,8 +563,11 @@ export function App() {
             aria-label="Toggle sidebar"
             aria-expanded={sidebarOpen()}
             aria-controls="folio-sidebar"
-            title="Toggle sidebar (⌘\\)"
-            onClick={() => setSidebarOpen((v) => !v)}
+            title={`Toggle sidebar (${SHORTCUT_LABELS.sidebar})`}
+            onClick={() => {
+              preFocusSnapshot = null;
+              setSidebarOpen((v) => !v);
+            }}
           >
             <Ic.SidebarIcon />
           </button>
@@ -408,10 +575,31 @@ export function App() {
             type="button"
             class="icon-btn"
             aria-label="Search & Recall"
-            title="Search & Recall (⌘K)"
+            title={`Search & Recall (${SHORTCUT_LABELS.search})`}
             onClick={() => setSearchOpen(true)}
           >
             <Ic.SearchIcon />
+          </button>
+          <span class="tb-gap" />
+          <button
+            type="button"
+            class="icon-btn"
+            aria-label="Back"
+            title={`Back (${SHORTCUT_LABELS.navBack})`}
+            disabled={hIdx() <= 0}
+            onClick={() => navHistory(-1)}
+          >
+            <Ic.ArrowLeft />
+          </button>
+          <button
+            type="button"
+            class="icon-btn"
+            aria-label="Forward"
+            title={`Forward (${SHORTCUT_LABELS.navForward})`}
+            disabled={hIdx() < 0 || hIdx() >= history().length - 1}
+            onClick={() => navHistory(1)}
+          >
+            <Ic.ArrowRight />
           </button>
         </div>
 
@@ -445,6 +633,7 @@ export function App() {
             <button
               type="button"
               class={viewMode() === "preview" ? "on" : ""}
+              title={`Preview (${SHORTCUT_LABELS.toggleSource})`}
               onClick={() => setViewMode("preview")}
             >
               Preview
@@ -452,6 +641,7 @@ export function App() {
             <button
               type="button"
               class={viewMode() === "split" ? "on" : ""}
+              title={`Split (${SHORTCUT_LABELS.toggleSplit})`}
               onClick={() => setViewMode("split")}
             >
               Split
@@ -459,6 +649,7 @@ export function App() {
             <button
               type="button"
               class={viewMode() === "source" ? "on" : ""}
+              title={`Source (${SHORTCUT_LABELS.toggleSource})`}
               onClick={() => setViewMode("source")}
             >
               Source
@@ -496,6 +687,12 @@ export function App() {
       </header>
 
       <main class="main workspace-pane">
+        <FindBar
+          activeDocKey={doc()?.uri ?? null}
+          viewMode={viewMode()}
+          hasModal={searchOpen() || mountModalOpen()}
+        />
+
         <Show when={errorBanner()}>
           {(msg) => (
             <div class="error-strip" role="alert">
@@ -515,7 +712,8 @@ export function App() {
           when={doc()}
           fallback={
             <div class="empty-stage">
-              Select or create a Markdown note (<kbd>⌘N</kbd>) or recall Hindsight (<kbd>⌘K</kbd>).
+              Select or create a Markdown note (<kbd>{SHORTCUT_LABELS.newNote}</kbd>) or recall
+              Hindsight (<kbd>{SHORTCUT_LABELS.search}</kbd>).
             </div>
           }
         >
@@ -685,7 +883,7 @@ export function App() {
         </Show>
       </main>
 
-      {/* Cmd+K Hybrid Search & Hindsight Recall Modal */}
+      {/* ⌘⇧F Hybrid Search & Hindsight Recall Modal */}
       <SearchModal
         open={searchOpen()}
         initialQuery={initParams.searchQuery || ""}

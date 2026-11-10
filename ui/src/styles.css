@@ -710,6 +710,16 @@ body.resizing .sb-resize {
   gap: 2px;
 }
 
+.tb-gap {
+  flex: 1;
+  min-width: 8px;
+  max-width: 40px;
+}
+
+.app:not(.sb-hidden) .tb-gap {
+  max-width: none;
+}
+
 .tb-left svg {
   width: 15px;
   height: 15px;
@@ -2051,4 +2061,170 @@ body.resizing .sb-resize {
 
 .search-status-pulse {
   color: var(--fg-2);
+}
+
+/* ---------- Orb Floating Find Bar (⌘F) ---------- */
+.find-bar {
+  position: fixed;
+  z-index: 1000;
+  top: 48px;
+  right: 24px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: min(392px, calc(100vw - 24px));
+  padding: 3px 4px;
+  background: var(--bg-elev);
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius-md);
+  box-shadow:
+    0 8px 24px rgb(0 0 0 / 26%),
+    0 1px 2px rgb(0 0 0 / 12%);
+  color: var(--fg-2);
+  -webkit-app-region: no-drag;
+}
+
+:root[data-theme="light"] .find-bar {
+  box-shadow:
+    0 6px 20px rgb(30 30 28 / 12%),
+    0 1px 2px rgb(30 30 28 / 6%);
+}
+
+.find-field {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 3px 0 8px;
+  background: var(--bg-inset);
+  border: 1px solid var(--stroke-soft);
+  border-radius: 5px;
+  transition: border-color var(--t) var(--ease);
+}
+
+:root[data-theme="light"] .find-field {
+  background: var(--bg-field);
+  border-color: var(--stroke);
+}
+
+.find-field:focus-within {
+  border-color: var(--focus-border);
+}
+
+.find-icon {
+  flex: none;
+  color: var(--fg-3);
+  pointer-events: none;
+}
+
+.find-bar input {
+  flex: 1;
+  width: 0;
+  min-width: 48px;
+  height: 100%;
+  padding: 0;
+  background: transparent;
+  color: var(--fg);
+  border: 0;
+  outline: none;
+  box-shadow: none;
+  font: 12.5px/1 var(--sans);
+}
+
+.find-bar input::placeholder {
+  color: var(--placeholder);
+}
+
+.find-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  color: var(--fg-3);
+  transition:
+    background-color var(--t) var(--ease),
+    color var(--t) var(--ease);
+}
+
+.find-toggle:hover {
+  background: var(--hover-1);
+  color: var(--fg-2);
+}
+
+.find-toggle[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--blue) 20%, transparent);
+  color: var(--blue);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--blue) 42%, transparent);
+}
+
+.find-count {
+  flex: none;
+  min-width: 60px;
+  padding: 0 5px;
+  font-size: 11.5px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--fg-3);
+  user-select: none;
+}
+
+.find-count.is-empty {
+  color: var(--red);
+}
+
+.find-actions {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  flex: none;
+}
+
+.find-actions button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 5px;
+  color: var(--fg-2);
+  transition:
+    background-color var(--t) var(--ease),
+    color var(--t) var(--ease),
+    opacity var(--t) var(--ease);
+}
+
+.find-actions button:hover:not(:disabled) {
+  background: var(--hover-1);
+  color: var(--fg);
+}
+
+.find-actions button:disabled {
+  opacity: 0.32;
+  cursor: default;
+}
+
+::highlight(folio-find) {
+  background: rgb(217 178 58 / 26%);
+  color: inherit;
+}
+
+::highlight(folio-find-current) {
+  background: #e0b44c;
+  color: #161615;
+}
+
+:root[data-theme="light"]::highlight(folio-find) {
+  background: rgb(234 179 8 / 30%);
+  color: inherit;
+}
+
+:root[data-theme="light"]::highlight(folio-find-current) {
+  background: #f2ab27;
+  color: #191918;
 }

@@ -171,7 +171,7 @@ export function SearchModal(props: {
           </div>
 
           <div class="search-foot">
-            <span>↑↓ Navigate · ↵ Open · ⌘K Unified Search & Recall</span>
+            <span>↑↓ Navigate · ↵ Open · ⌘⇧F Unified Search & Recall</span>
             <Show when={loading()}>
               <span class="search-status-pulse">Syncing…</span>
             </Show>
