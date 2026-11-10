@@ -176,6 +176,7 @@ pkgs.testers.runNixOSTest {
   testScript = ''
     import json
     import time
+    import urllib.request
 
     def hypr(cmd: str) -> str:
         return (
@@ -190,7 +191,7 @@ pkgs.testers.runNixOSTest {
     start_all()
     desktop.wait_for_unit("multi-user.target")
 
-    # 1. Start local read-only Hindsight replay server backed by live-captured thomas bank pages/sources
+    # 1. Start local read-only Hindsight replay server inside VM backed by host-fetched `thomas` bank JSON
     desktop.succeed(
         "cat > /tmp/hs_replay.py << 'PY'\n"
         "import json, sys, urllib.parse\n"
