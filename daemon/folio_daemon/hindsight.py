@@ -121,28 +121,187 @@ class HindsightProvider:
             "cached_count": len(cached_docs),
         }
 
+    def _sort_banks(self, banks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        def sort_key(b: dict[str, Any]) -> tuple[int, str]:
+            bid = str(b.get("bank_id") or "")
+            if bid == self.default_bank:
+                return (0, bid.lower())
+            if bid.lower() == "spark-memory-bank":
+                return (2, bid.lower())
+            return (1, bid.lower())
+
+        return sorted(banks, key=sort_key)
+
     def list_banks(self) -> list[dict[str, Any]]:
         if self._banks_cache is not None:
             return self._banks_cache
+        fallback = self._sort_banks(
+            [
+                {"bank_id": "thomas", "name": "Thomas Personal Memory"},
+                {"bank_id": "ppl", "name": "Aviation (PPL)"},
+            ]
+        )
         if not self._primary_token():
-            return [{"bank_id": "thomas", "name": "Thomas Personal Memory"}, {"bank_id": "ppl", "name": "Aviation (PPL)"}]
+            return fallback
         try:
             res = self._request_json("/v1/default/banks", timeout=10.0)
             banks = res.get("banks") if isinstance(res, dict) else []
             if isinstance(banks, list) and banks:
-                out = [
-                    {
-                        "bank_id": b.get("bank_id", ""),
-                        "name": b.get("name") or b.get("bank_id", ""),
-                    }
-                    for b in banks
-                    if b.get("bank_id")
-                ]
+                out = self._sort_banks(
+                    [
+                        {
+                            "bank_id": b.get("bank_id", ""),
+                            "name": b.get("name") or b.get("bank_id", ""),
+                        }
+                        for b in banks
+                        if b.get("bank_id")
+                    ]
+                )
                 self._banks_cache = out
                 return out
         except Exception:
             pass
-        return [{"bank_id": "thomas", "name": "Thomas Personal Memory"}, {"bank_id": "ppl", "name": "Aviation (PPL)"}]
+        return fallback
+
+    @staticmethod
+    def _format_hindsight_doc_label(doc_id: str, meta: dict[str, Any], context: str = "") -> str:
+        for key in ("title", "doc_name", "name", "subject"):
+            val = str(meta.get(key) or "").strip()
+            if val:
+                return val
+
+        session_key = str(meta.get("session_key") or "").strip()
+        part = str(meta.get("part") or "").strip()
+        parts = str(meta.get("parts") or "").strip()
+        if session_key and part:
+            suffix = f"{part}/{parts}" if parts else part
+            return f"{session_key} · Part {suffix}"
+
+        m_thread = re.match(r"^thread_(.+?)_(\d{6,})$", doc_id)
+        if m_thread:
+            who = m_thread.group(1).replace("_", " ").strip()
+            return f"SMS · {who}" if who else doc_id
+
+        if doc_id.startswith("rm-"):
+            short_tail = doc_id.rsplit("-", 1)[-1][:8]
+            return f"reMarkable Page · {short_tail}"
+
+        cleaned = re.sub(r"^gdrive-", "", doc_id)
+        if re.match(r"^[A-Za-z0-9_-]{4,80}$", cleaned) and ("-" in cleaned or "_" in cleaned):
+            acronyms = {"ppl", "nav", "met", "agk", "law", "hpl", "ops", "fpl", "com", "pof", "vfr", "ifr", "icao", "sms"}
+            words = [w for w in re.split(r"[-_]+", cleaned) if w]
+            if words:
+                pretty = " ".join(
+                    w.upper() if w.lower() in acronyms else (w.capitalize() if w.islower() else w)
+                    for w in words
+                )
+                return pretty
+
+        if context and context not in ("general",) and "=" not in context and len(context) <= 48:
+            return f"{doc_id[:24]} ({context})"
+        return doc_id
+
+    @staticmethod
+    def _classify_doc_folder(doc_id: str, meta: dict[str, Any], is_agent: bool) -> str:
+        stype = str(meta.get("type_de_source") or "").lower()
+        if is_agent or "progress" in stype or "summary" in stype:
+            return "Syntheses & Progress"
+        if "audio" in stype or "lecture" in stype or "gdrive-" in doc_id:
+            return "Lectures & Course Material"
+        if "remarkable" in stype or doc_id.startswith("rm-"):
+            return "reMarkable Notes"
+        if doc_id.startswith("thread_"):
+            return "Message Threads"
+        return "Archive Documents"
+
+    def _list_bank_documents_nodes(self, bank_id: str, limit: int = 48) -> list[TreeNode]:
+        cache_key = f"hindsight:docs_tree:{bank_id}"
+        items: Optional[list[dict[str, Any]]] = None
+        if self._primary_token():
+            try:
+                res = self._request_json(f"/v1/default/banks/{bank_id}/documents?limit={limit}", timeout=12.0)
+                raw_items = res.get("items") if isinstance(res, dict) else None
+                if isinstance(raw_items, list):
+                    items = raw_items
+                    self.cache.set_kv(cache_key, items)
+            except Exception:
+                items = None
+
+        if items is None:
+            cached = self.cache.get_kv(cache_key)
+            if isinstance(cached, list):
+                items = cached
+
+        if not items:
+            return []
+
+        leaves_by_group: dict[str, list[TreeNode]] = {}
+        flat_leaves: list[TreeNode] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            doc_id = str(item.get("id") or "").strip()
+            if not doc_id:
+                continue
+            rp = item.get("retain_params") or {}
+            rp_meta = rp.get("metadata") if isinstance(rp, dict) else {}
+            doc_meta = item.get("document_metadata") or {}
+            merged_meta: dict[str, Any] = {
+                **(rp_meta if isinstance(rp_meta, dict) else {}),
+                **(doc_meta if isinstance(doc_meta, dict) else {}),
+            }
+            if str(merged_meta.get("ocr_routing_mode") or "").lower() == "blank":
+                continue
+            auteur = str(merged_meta.get("auteur") or "thomas")
+            stype = str(merged_meta.get("type_de_source") or "")
+            is_agent = (
+                str(merged_meta.get("is_agent_summary", "")).lower() == "true"
+                or auteur.lower().startswith("agent")
+                or stype == "agent_summary"
+            )
+            context_str = str(rp.get("context") or "") if isinstance(rp, dict) else ""
+            label = self._format_hindsight_doc_label(doc_id, merged_meta, context_str)
+            uri = f"hindsight://{bank_id}/document/{doc_id}"
+            node = TreeNode(
+                id=uri,
+                name=label,
+                kind="page",
+                uri=uri,
+                provider=self.provider_id,
+                badge="AGENT" if is_agent else None,
+                is_agent_summary=is_agent,
+            )
+            flat_leaves.append(node)
+            group = self._classify_doc_folder(doc_id, merged_meta, is_agent)
+            leaves_by_group.setdefault(group, []).append(node)
+
+        if len(flat_leaves) <= 16 or len(leaves_by_group) <= 1:
+            return flat_leaves
+
+        group_order = [
+            "Syntheses & Progress",
+            "Lectures & Course Material",
+            "reMarkable Notes",
+            "Message Threads",
+            "Archive Documents",
+        ]
+        folders: list[TreeNode] = []
+        for gname in group_order:
+            kids = leaves_by_group.get(gname)
+            if not kids:
+                continue
+            slug = re.sub(r"[^a-z0-9]+", "-", gname.lower()).strip("-")
+            folders.append(
+                TreeNode(
+                    id=f"hs-docgroup:{bank_id}:{slug}",
+                    name=gname,
+                    kind="folder",
+                    provider=self.provider_id,
+                    badge=str(len(kids)),
+                    children=kids,
+                )
+            )
+        return folders
 
     def list_tree(self, scope: Optional[str] = None) -> list[TreeNode]:
         bank_id = _validate_bank_id(scope or self.default_bank)
@@ -156,13 +315,22 @@ class HindsightProvider:
                     src_node = self._recent_sources_folder(bank_id)
                     if src_node:
                         nodes.append(src_node)
-                    return nodes
+                    if nodes:
+                        return nodes
+                    doc_nodes = self._list_bank_documents_nodes(bank_id)
+                    if doc_nodes:
+                        return doc_nodes
+                    return []
             except Exception:
                 pass
 
         cached_roots = self.cache.get_kv(cache_key)
-        if isinstance(cached_roots, list):
+        if isinstance(cached_roots, list) and cached_roots:
             return [self._convert_kb_node(n, bank_id) for n in cached_roots]
+
+        doc_nodes = self._list_bank_documents_nodes(bank_id)
+        if doc_nodes:
+            return doc_nodes
 
         cached_docs = self.cache.list_documents(provider=self.provider_id, scope=bank_id)
         return [
@@ -438,9 +606,19 @@ class HindsightProvider:
         if not isinstance(hdoc, dict):
             return None
         orig = str(hdoc.get("original_text") or "")
-        prov_hdr, clean_body = strip_provenance_headers(orig)
-        doc_meta = hdoc.get("document_metadata") or {}
-        auteur = str(doc_meta.get("auteur") or "thomas")
+        prov_hdr, stripped_body = strip_provenance_headers(orig)
+        fm, clean_body = parse_frontmatter(stripped_body)
+        rp = hdoc.get("retain_params") or {}
+        rp_meta = rp.get("metadata") if isinstance(rp, dict) else {}
+        raw_doc_meta = hdoc.get("document_metadata") or {}
+        doc_meta: dict[str, Any] = {
+            **(rp_meta if isinstance(rp_meta, dict) else {}),
+            **(raw_doc_meta if isinstance(raw_doc_meta, dict) else {}),
+        }
+        context_str = str(rp.get("context") or "") if isinstance(rp, dict) else ""
+        fallback_label = self._format_hindsight_doc_label(doc_id, doc_meta, context_str)
+        title = extract_title({**doc_meta, **fm}, clean_body, fallback_label)
+        auteur = str(doc_meta.get("auteur") or fm.get("author") or "thomas")
         stype = str(doc_meta.get("type_de_source") or prov_hdr.get("type") or "document")
         source_id = str(doc_meta.get("source_id") or prov_hdr.get("source_id") or "") or None
         is_agent = (
@@ -448,10 +626,11 @@ class HindsightProvider:
             or auteur.lower().startswith("agent")
             or stype == "agent_summary"
         )
-        tags = [str(t) for t in (hdoc.get("tags") or [])]
+        tags = list(dict.fromkeys([*(str(t) for t in (hdoc.get("tags") or [])), *extract_tags(fm, clean_body)]))
         src_refs, kp_refs = extract_hindsight_refs(clean_body)
         uri = f"hindsight://{bank_id}/document/{doc_id}"
-        updated_at = str(hdoc.get("updated_at") or hdoc.get("created_at") or "")
+        event_date = str(rp.get("event_date") or "") if isinstance(rp, dict) else ""
+        updated_at = str(hdoc.get("updated_at") or hdoc.get("created_at") or event_date or "")
         prov = ProvenanceInfo(
             author=auteur,
             source_type=stype,
@@ -459,7 +638,7 @@ class HindsightProvider:
             source_id=source_id,
             document_id=doc_id,
             bank_id=bank_id,
-            original_date=str(doc_meta.get("date_originale") or prov_hdr.get("date") or updated_at),
+            original_date=str(doc_meta.get("date_originale") or prov_hdr.get("date") or event_date or updated_at),
             updated_at=updated_at,
             related_sources=src_refs,
             related_pages=kp_refs,
@@ -469,11 +648,11 @@ class HindsightProvider:
             uri=uri,
             provider=self.provider_id,
             external_id=doc_id,
-            title=doc_id,
+            title=title,
             body=clean_body,
             raw_markdown=clean_body,
             folder_path=f"{bank_id}/documents",
-            frontmatter={"document_id": doc_id, "source_id": source_id, "author": auteur},
+            frontmatter={**fm, "document_id": doc_id, "source_id": source_id, "author": auteur},
             tags=tags,
             wikilinks=[*kp_refs, *src_refs],
             provenance=prov,

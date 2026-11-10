@@ -125,7 +125,15 @@ class MockRemoteApisTest(unittest.TestCase):
 
             def do_GET(self) -> None:
                 if self.path == "/v1/default/banks":
-                    self._json({"banks": [{"bank_id": "thomas", "name": "Thomas"}]})
+                    self._json(
+                        {
+                            "banks": [
+                                {"bank_id": "Spark-Memory-Bank", "name": "Spark"},
+                                {"bank_id": "ppl", "name": "Aviation"},
+                                {"bank_id": "thomas", "name": "Thomas"},
+                            ]
+                        }
+                    )
                 elif self.path == "/v1/default/banks/thomas/knowledge-base/tree":
                     self._json(
                         {
@@ -139,6 +147,60 @@ class MockRemoteApisTest(unittest.TestCase):
                                     ],
                                 }
                             ]
+                        }
+                    )
+                elif self.path == "/v1/default/banks/ppl/knowledge-base/tree":
+                    self._json({"roots": []})
+                elif self.path.startswith("/v1/default/banks/ppl/documents?"):
+                    self._json(
+                        {
+                            "total": 3,
+                            "items": [
+                                {
+                                    "id": "rm-blank-page",
+                                    "retain_params": {
+                                        "context": "general",
+                                        "metadata": {"ocr_routing_mode": "blank"},
+                                    },
+                                },
+                                {
+                                    "id": "gdrive-ppl-course-progress",
+                                    "retain_params": {
+                                        "context": "progress",
+                                        "metadata": {
+                                            "auteur": "agent:spark-memory-gdrive-ppl",
+                                            "is_agent_summary": "True",
+                                            "type_de_source": "ppl_course_progress",
+                                        },
+                                    },
+                                },
+                                {
+                                    "id": "gdrive-ppl-audio-nav-1",
+                                    "retain_params": {
+                                        "context": "lecture",
+                                        "metadata": {
+                                            "auteur": "José Carvalho",
+                                            "session_key": "2026-11-05-nav-1",
+                                            "part": "9",
+                                            "parts": "12",
+                                            "type_de_source": "ppl_lecture_audio",
+                                        },
+                                    },
+                                },
+                            ],
+                        }
+                    )
+                elif self.path == "/v1/default/banks/ppl/documents/gdrive-ppl-course-progress":
+                    self._json(
+                        {
+                            "original_text": "Course synthesis body.",
+                            "retain_params": {
+                                "metadata": {
+                                    "auteur": "agent:spark-memory-gdrive-ppl",
+                                    "is_agent_summary": "True",
+                                    "type_de_source": "ppl_course_progress",
+                                }
+                            },
                         }
                     )
                 elif self.path == "/v1/default/banks/thomas/knowledge-base/pages/kp-demo1234":
@@ -198,9 +260,23 @@ class MockRemoteApisTest(unittest.TestCase):
                     secrets = CredentialResolver()
                     hs = HindsightProvider(cache, secrets)
 
+                    banks = [b["bank_id"] for b in hs.list_banks()]
+                    self.assertEqual(banks, ["thomas", "ppl", "Spark-Memory-Bank"])
+
                     tree = hs.list_tree("thomas")
                     self.assertEqual(len(tree), 1)
                     self.assertEqual(tree[0].children[0].uri, "hindsight://thomas/page/kp-demo1234")
+
+                    ppl_tree = hs.list_tree("ppl")
+                    self.assertEqual(len(ppl_tree), 2)
+                    self.assertEqual(ppl_tree[0].name, "PPL Course Progress")
+                    self.assertEqual(ppl_tree[0].badge, "AGENT")
+                    self.assertEqual(ppl_tree[1].name, "2026-11-05-nav-1 · Part 9/12")
+
+                    ppl_doc = hs.get_document("hindsight://ppl/document/gdrive-ppl-course-progress")
+                    assert ppl_doc is not None
+                    self.assertEqual(ppl_doc.title, "PPL Course Progress")
+                    self.assertTrue(ppl_doc.provenance.is_agent_summary)
 
                     kp_doc = hs.get_document("kp-demo1234", scope="thomas")
                     assert kp_doc is not None

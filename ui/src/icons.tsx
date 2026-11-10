@@ -178,3 +178,19 @@ export const RefreshIcon = (p: IconProps) => (
     <path d="M12.5 6.9a4.65 4.65 0 1 0 .35 2.45" />
   </I>
 );
+
+export const VaultIcon = (p: IconProps) => (
+  <I size={13} sw={1.2} {...p}>
+    <ellipse cx="8" cy="4.3" rx="4.6" ry="1.9" />
+    <path d="M3.4 4.3v3.6c0 1.05 2.06 1.9 4.6 1.9s4.6-.85 4.6-1.9V4.3" />
+    <path d="M3.4 7.9v3.6c0 1.05 2.06 1.9 4.6 1.9s4.6-.85 4.6-1.9V7.9" />
+  </I>
+);
+
+export const WorkspaceIcon = (p: IconProps) => (
+  <I size={13} sw={1.2} {...p}>
+    <rect x="2.7" y="3" width="10.6" height="10" rx="2" />
+    <path d="M2.7 6.3h10.6" />
+    <path d="M6.1 6.3V13" />
+  </I>
+);

@@ -30,9 +30,35 @@ function countTreeLeaves(nodes: TreeNode[]): number {
   return total;
 }
 
+function splitNumericPrefix(name: string): { prefix: string | null; rest: string } {
+  const m = /^(\d{1,3})\s*[—–-]\s*(.+)$/.exec(name.trim());
+  if (!m) return { prefix: null, rest: name };
+  return { prefix: m[1], rest: m[2] };
+}
+
+function SidebarBadge(props: { badge?: string | null; isAgent?: boolean }) {
+  const cleaned = () => (props.badge ?? "").trim();
+  const isZero = () => cleaned() === "" || cleaned() === "0";
+  const isNumeric = () => /^\d+$/.test(cleaned());
+
+  return (
+    <Show when={!isZero()}>
+      <Show
+        when={!isNumeric()}
+        fallback={<span class="sb-count">{cleaned()}</span>}
+      >
+        <span class={`inbox-sb-badge ${props.isAgent ? "agent" : ""}`}>
+          {cleaned()}
+        </span>
+      </Show>
+    </Show>
+  );
+}
+
 function TreeBranch(props: {
   node: TreeNode;
   depth: number;
+  isContainer?: boolean;
   defaultExpanded?: boolean;
   activeUri: string | null;
   onSelectUri: (uri: string) => void;
@@ -44,6 +70,11 @@ function TreeBranch(props: {
     readBoolStorage(storageKey(), props.defaultExpanded ?? props.depth < 1),
   );
   const isActive = () => Boolean(props.node.uri && props.node.uri === props.activeUri);
+  const parsedLabel = createMemo(() =>
+    isFolder() && !props.isContainer
+      ? splitNumericPrefix(props.node.name)
+      : { prefix: null, rest: props.node.name },
+  );
 
   const toggleExpand = () => {
     const next = !expanded();
@@ -51,12 +82,16 @@ function TreeBranch(props: {
     writeBoolStorage(storageKey(), next);
   };
 
+  const levelClass = () => {
+    if (!isFolder()) return "file";
+    return props.isContainer ? "project level-container" : "project level-folder";
+  };
+
   return (
-    <div class="tree-branch">
+    <div class={`tree-branch ${expanded() && isFolder() ? "is-open" : ""}`}>
       <button
         type="button"
-        class={`row tree-row ${isActive() ? "active" : ""} ${isFolder() ? "project" : "file"}`}
-        style={{ "padding-left": `${16 + props.depth * 13}px` }}
+        class={`row tree-row ${isActive() ? "active" : ""} ${levelClass()}`}
         onClick={() => {
           if (props.node.uri && hasChildren()) {
             if (!expanded()) {
@@ -84,25 +119,27 @@ function TreeBranch(props: {
             when={isFolder()}
             fallback={
               props.node.is_agent_summary ? (
-                <Ic.KnowledgeIcon size={13} />
+                <Ic.KnowledgeIcon size={12.5} />
               ) : (
-                <Ic.DocIcon size={14} />
+                <Ic.DocIcon size={13.5} />
               )
             }
           >
-            {expanded() ? <Ic.ChevronDown /> : <Ic.ChevronRight />}
+            {expanded() ? <Ic.ChevronDown size={11.5} /> : <Ic.ChevronRight size={11.5} />}
           </Show>
         </span>
-        <span class="row-label" title={props.node.name}>
-          {props.node.name}
-        </span>
-        <Show when={props.node.badge}>
-          {(badge) => (
-            <span class={`inbox-sb-badge ${props.node.is_agent_summary ? "agent" : ""}`}>
-              {badge()}
-            </span>
-          )}
+        <Show when={props.isContainer}>
+          <span class="container-ico">
+            <Ic.WorkspaceIcon size={12.5} />
+          </span>
         </Show>
+        <span class="row-label" title={props.node.name}>
+          <Show when={parsedLabel().prefix}>
+            {(num) => <span class="folder-num">{num()}</span>}
+          </Show>
+          <span>{parsedLabel().rest}</span>
+        </span>
+        <SidebarBadge badge={props.node.badge} isAgent={props.node.is_agent_summary} />
       </button>
       <Show when={isFolder() && expanded() && props.node.children.length > 0}>
         <div class="tree-children">
@@ -153,12 +190,16 @@ function BankSubcategory(props: {
     }
   });
 
-  const badgeCount = createMemo(() => {
+  const leafCount = createMemo(() => {
     const list = props.nodes;
     if (!list) return null;
     const leaves = countTreeLeaves(list);
-    return leaves > 0 ? String(leaves) : String(list.length);
+    return leaves > 0 ? leaves : list.length;
   });
+
+  const isEmptyLoaded = createMemo(
+    () => props.nodes !== undefined && !props.loading && (leafCount() ?? 0) === 0,
+  );
 
   const toggle = () => {
     const next = !expanded();
@@ -170,11 +211,13 @@ function BankSubcategory(props: {
   };
 
   return (
-    <div class="tree-branch bank-branch" data-bank-id={props.bank.bank_id}>
+    <div
+      class={`tree-branch bank-branch ${expanded() ? "is-open" : ""} ${isEmptyLoaded() ? "empty-bank" : ""}`}
+      data-bank-id={props.bank.bank_id}
+    >
       <button
         type="button"
-        class={`row tree-row project bank-row ${props.isActiveBank && !expanded() ? "active" : ""}`}
-        style={{ "padding-left": "16px" }}
+        class={`row tree-row project level-container bank-row ${props.isActiveBank && !expanded() ? "active" : ""}`}
         title={
           props.bank.name && props.bank.name !== props.bank.bank_id
             ? `${props.bank.bank_id} — ${props.bank.name}`
@@ -183,13 +226,18 @@ function BankSubcategory(props: {
         aria-expanded={expanded()}
         onClick={toggle}
       >
-        <span class="row-ico">{expanded() ? <Ic.ChevronDown /> : <Ic.ChevronRight />}</span>
+        <span class="row-ico">
+          {expanded() ? <Ic.ChevronDown size={11.5} /> : <Ic.ChevronRight size={11.5} />}
+        </span>
+        <span class="container-ico">
+          <Ic.VaultIcon size={12.5} />
+        </span>
         <span class="row-label">{props.bank.bank_id}</span>
         <Show when={props.loading && !props.nodes}>
-          <span class="inbox-sb-badge">…</span>
+          <span class="sb-count">…</span>
         </Show>
-        <Show when={badgeCount()}>
-          {(cnt) => <span class="inbox-sb-badge">{cnt()}</span>}
+        <Show when={leafCount() !== null && (leafCount() ?? 0) > 0}>
+          <SidebarBadge badge={String(leafCount())} />
         </Show>
       </button>
 
@@ -198,8 +246,8 @@ function BankSubcategory(props: {
           <Show
             when={(props.nodes?.length ?? 0) > 0}
             fallback={
-              <div class="row note" style={{ "padding-left": "26px" }}>
-                {props.loading ? "Loading bank…" : "No knowledge pages yet"}
+              <div class="row note">
+                {props.loading ? "Loading bank…" : "Empty bank"}
               </div>
             }
           >
@@ -234,7 +282,7 @@ function ProviderSection(props: {
   children: JSX.Element;
 }) {
   return (
-    <section class="provider-section" data-provider={props.id}>
+    <section class={`provider-section ${props.open ? "is-open" : ""}`} data-provider={props.id}>
       <div class="section section-row provider-head">
         <button
           type="button"
@@ -242,9 +290,6 @@ function ProviderSection(props: {
           aria-expanded={props.open}
           onClick={props.onToggle}
         >
-          <span class="provider-chevron">
-            {props.open ? <Ic.ChevronDown size={11.5} /> : <Ic.ChevronRight size={11.5} />}
-          </span>
           <span class="provider-ico">{props.icon}</span>
           <span class="provider-title">{props.title}</span>
           <Show when={props.statusDot}>
@@ -255,6 +300,9 @@ function ProviderSection(props: {
               ro
             </span>
           </Show>
+          <span class="provider-chevron">
+            {props.open ? <Ic.ChevronDown size={11} /> : <Ic.ChevronRight size={11} />}
+          </span>
         </button>
 
         <Show when={props.action}>
@@ -295,11 +343,33 @@ export function Sidebar(props: {
   onOpenMountDialog: () => void;
   onSyncNotion: () => void;
 }) {
-  const bankList = createMemo(() =>
-    props.banks.length > 0
-      ? props.banks
-      : [{ bank_id: props.defaultBank, name: props.defaultBank }],
-  );
+  const bankList = createMemo(() => {
+    const raw =
+      props.banks.length > 0
+        ? [...props.banks]
+        : [{ bank_id: props.defaultBank, name: props.defaultBank }];
+
+    const rankOf = (bid: string): [number, number, string] => {
+      if (bid === props.defaultBank) return [0, 0, bid.toLowerCase()];
+      const loaded = props.bankTrees[bid];
+      const loading = Boolean(props.loadingBanks[bid]);
+      if (loaded !== undefined && !loading) {
+        const leaves = countTreeLeaves(loaded) || loaded.length;
+        if (leaves === 0) return [2, 0, bid.toLowerCase()];
+        return [1, -leaves, bid.toLowerCase()];
+      }
+      if (bid.toLowerCase() === "spark-memory-bank") return [2, 0, bid.toLowerCase()];
+      return [1, 0, bid.toLowerCase()];
+    };
+
+    return raw.sort((a, b) => {
+      const ra = rankOf(a.bank_id);
+      const rb = rankOf(b.bank_id);
+      if (ra[0] !== rb[0]) return ra[0] - rb[0];
+      if (ra[1] !== rb[1]) return ra[1] - rb[1];
+      return ra[2].localeCompare(rb[2]);
+    });
+  });
 
   return (
     <aside id="folio-sidebar" class="sidebar" data-testid="sidebar">
@@ -460,6 +530,7 @@ export function Sidebar(props: {
                   <TreeBranch
                     node={node}
                     depth={0}
+                    isContainer={node.id.startsWith("notion-ws:")}
                     defaultExpanded={idx() === 0}
                     activeUri={props.activeUri}
                     onSelectUri={(u) => props.onSelectUri(u)}

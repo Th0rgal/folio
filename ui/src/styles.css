@@ -388,9 +388,9 @@ select:focus:not(:focus-visible) {
 .row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   width: 100%;
-  height: 31px;
+  height: 29px;
   padding: 0 6px;
   border-radius: var(--radius-sm);
   text-align: left;
@@ -398,22 +398,44 @@ select:focus:not(:focus-visible) {
 }
 
 .sb-main-nav > .row {
-  height: 32px;
+  height: 31px;
+  gap: 8px;
 }
 
 .sb-main-nav > .row .row-label {
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 450;
 }
 
 .row-ico,
 .row > svg {
   flex: none;
-  width: 16px;
-  height: 16px;
+  width: 15px;
+  height: 15px;
   display: grid;
   place-items: center;
-  color: color-mix(in srgb, var(--fg) 62%, transparent);
+  color: color-mix(in srgb, var(--fg) 56%, transparent);
+}
+
+.sb-main-nav > .row > .row-ico {
+  width: 16px;
+  height: 16px;
+}
+
+.container-ico {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-left: -2px;
+  display: grid;
+  place-items: center;
+  color: var(--fg-3);
+  transition: color var(--t) var(--ease);
+}
+
+.row:hover .container-ico,
+.row.active .container-ico {
+  color: var(--fg-2);
 }
 
 .row:hover:not(.active):not(:disabled):not(.note) {
@@ -429,48 +451,100 @@ select:focus:not(:focus-visible) {
   color: var(--fg-strong);
 }
 
-.row.project {
+/* Level 2: Memory Banks & Notion Workspaces */
+.row.level-container {
+  height: 29px;
   color: var(--fg);
 }
 
-.row.project > .row-label {
-  font-size: 13.5px;
-  font-weight: 500;
+.row.level-container > .row-label {
+  font-size: 13px;
+  font-weight: 560;
+  color: var(--fg);
+  letter-spacing: -0.006em;
 }
 
-.row.project:hover:not(.active) {
+.row.level-container:hover:not(.active) > .row-label {
   color: var(--fg-strong);
-  background: var(--bg-hover);
 }
 
-.row.file {
+/* Level 3: Content Folders */
+.row.level-folder {
+  height: 28px;
   color: var(--fg-2);
 }
 
-.row.file:hover:not(.active) {
-  color: var(--fg);
+.row.level-folder > .row-label {
+  font-size: 12.75px;
+  font-weight: 460;
+  color: var(--fg-2);
 }
 
-.row.file.active {
+.row.level-folder:hover:not(.active) > .row-label {
   color: var(--fg-strong);
 }
 
-.row.file .row-ico {
+.folder-num {
+  font: 500 10.5px/1 var(--mono);
+  color: var(--fg-4);
+  margin-right: 6px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+.row:hover .folder-num,
+.row.active .folder-num {
   color: var(--fg-3);
 }
 
+/* Level 4: Leaf Notes & Pages */
+.row.file {
+  height: 28px;
+  color: var(--fg-3);
+}
+
+.row.file > .row-label {
+  font-size: 12.5px;
+  font-weight: 400;
+  color: var(--fg-3);
+}
+
+.row.file:hover:not(.active),
+.row.file:hover:not(.active) > .row-label {
+  color: var(--fg);
+}
+
+.row.file.active,
+.row.file.active > .row-label {
+  color: var(--fg-strong);
+  font-weight: 500;
+}
+
+.row.file .row-ico {
+  color: var(--fg-4);
+}
+
+.row.file:hover:not(.active) .row-ico,
 .row.file.active .row-ico {
   color: var(--fg-2);
 }
 
+.empty-bank > .bank-row {
+  opacity: 0.52;
+}
+
+.empty-bank > .bank-row:hover {
+  opacity: 0.82;
+}
+
 .row.note {
   font-size: 12px;
-  color: var(--fg-3);
+  color: var(--fg-4);
   height: auto;
   min-height: 24px;
   white-space: normal;
   line-height: 15px;
-  padding: 4px 10px;
+  padding: 4px 6px;
   cursor: default;
 }
 
@@ -494,16 +568,32 @@ select:focus:not(:focus-visible) {
   color: var(--fg-4);
 }
 
+.sb-count {
+  flex: none;
+  padding: 0 2px;
+  color: var(--fg-4);
+  font: 450 11px/1 var(--sans);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  transition: color var(--t) var(--ease);
+}
+
+.row:hover .sb-count,
+.row.active .sb-count {
+  color: var(--fg-3);
+}
+
 .inbox-sb-badge {
   flex: none;
   min-width: 16px;
-  height: 16px;
-  padding: 0 5px;
-  margin-right: -2px;
-  border-radius: 999px;
+  height: 15px;
+  padding: 0 4.5px;
+  margin-right: -1px;
+  border-radius: 4px;
   background: color-mix(in srgb, var(--fg) 7%, transparent);
   color: var(--fg-3);
-  font: 400 10.5px/16px var(--sans);
+  font: 500 9.5px/15px var(--mono);
+  letter-spacing: 0.02em;
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
@@ -515,15 +605,16 @@ select:focus:not(:focus-visible) {
 
 .row:hover .inbox-sb-badge:not(.agent),
 .row.active .inbox-sb-badge:not(.agent) {
-  background: color-mix(in srgb, var(--fg) 9%, transparent);
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
   color: var(--fg-2);
 }
 
+/* Level 1: Top-Level Provider Sections & Nested Tree Guides */
 .section {
   color: var(--fg);
   font-size: 14px;
-  padding: 0 4px 0 2px;
-  margin: 15px 0 3px;
+  padding: 0;
+  margin: 0 0 2px;
 }
 
 .section-row {
@@ -533,21 +624,46 @@ select:focus:not(:focus-visible) {
   gap: 4px;
 }
 
-.provider-section + .provider-section {
-  margin-top: 4px;
+.provider-section {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--stroke-soft);
+}
+
+.provider-section > .group {
+  margin-left: 7px;
+  margin-top: 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.tree-children {
+  margin-left: 13px;
+  padding-left: 7px;
+  border-left: 1px solid var(--stroke-soft);
+  margin-block: 1px 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  transition: border-color 120ms ease;
+}
+
+.tree-branch:hover > .tree-children {
+  border-left-color: var(--stroke-strong);
 }
 
 .provider-toggle {
   flex: 1;
   min-width: 0;
-  height: 34px;
-  padding: 0 8px 0 5px;
+  height: 31px;
+  padding: 0 6px;
   border-radius: var(--radius-sm);
   display: inline-flex;
   align-items: center;
   gap: 8px;
   color: var(--fg-strong);
-  font-size: 14.5px;
+  font-size: 13.75px;
   font-weight: 600;
   letter-spacing: -0.012em;
   text-align: left;
@@ -561,22 +677,9 @@ select:focus:not(:focus-visible) {
   color: var(--fg-strong);
 }
 
-.provider-chevron {
-  width: 14px;
-  height: 14px;
-  display: grid;
-  place-items: center;
-  color: var(--fg-3);
-  flex: none;
-}
-
-.provider-toggle:hover .provider-chevron {
-  color: var(--fg-2);
-}
-
 .provider-ico {
-  width: 17px;
-  height: 17px;
+  width: 16px;
+  height: 16px;
   display: grid;
   place-items: center;
   color: var(--fg-2);
@@ -592,6 +695,21 @@ select:focus:not(:focus-visible) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.provider-chevron {
+  width: 13px;
+  height: 13px;
+  margin-left: -2px;
+  display: grid;
+  place-items: center;
+  color: var(--fg-4);
+  flex: none;
+  transition: color 90ms ease;
+}
+
+.provider-toggle:hover .provider-chevron {
+  color: var(--fg-2);
 }
 
 .provider-actions {
