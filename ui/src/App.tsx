@@ -65,6 +65,78 @@ function parseInitialParams(): {
   };
 }
 
+const HIDDEN_FRONTMATTER_KEYS = new Set([
+  "title",
+  "name",
+  "tags",
+  "id",
+  "page_id",
+  "source_id",
+  "document_id",
+  "external_id",
+  "bank",
+  "bank_id",
+  "type",
+  "source_type",
+  "type_de_source",
+  "author",
+  "auteur",
+  "is_agent_summary",
+  "description",
+  "summary",
+  "abstract",
+  "content",
+  "body",
+  "prompt",
+  "instructions",
+  "consigne",
+  "timestamp",
+  "updated_at",
+  "created_at",
+  "date",
+  "date_originale",
+  "date_import",
+  "original_date",
+  "url",
+  "uri",
+  "links",
+  "source_ids",
+  "linked_page_ids",
+  "related_sources",
+  "related_pages",
+]);
+
+function formatTagLabel(raw: string): string | null {
+  const cleaned = raw.replace(/\s+/g, " ").trim();
+  if (!cleaned || cleaned.length > 40) return null;
+  if (cleaned.startsWith("@")) {
+    return cleaned;
+  }
+  const bare = cleaned.replace(/^#+/, "").trim();
+  if (!bare) return null;
+  return bare.startsWith("@") ? bare : `#${bare}`;
+}
+
+function formatShortExternalId(id: string): string {
+  const m = /^(kp|src|doc)-([0-9a-f]{8})[0-9a-f]{6,}$/i.exec(id);
+  if (m) return `${m[1]}-${m[2]}…`;
+  return id.length > 20 ? `${id.slice(0, 16)}…` : id;
+}
+
+function formatShortDate(raw?: string | null): string | null {
+  if (!raw) return null;
+  const m = /^(\d{4}-\d{2}-\d{2})/.exec(raw.trim());
+  return m ? m[1] : null;
+}
+
+function readStoredSidebarOpen(): boolean {
+  try {
+    return window.localStorage?.getItem("folio:sidebar-open") !== "0";
+  } catch {
+    return true;
+  }
+}
+
 function firstDocumentUri(nodes: TreeNode[]): string | null {
   for (const n of nodes) {
     if (n.uri) return n.uri;
@@ -86,7 +158,7 @@ export function App() {
   const [dirty, setDirty] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   const [viewMode, setViewMode] = createSignal<ViewMode>(initParams.modeOverride || "preview");
-  const [sidebarOpen, setSidebarOpen] = createSignal(true);
+  const [sidebarOpen, setSidebarOpen] = createSignal(readStoredSidebarOpen());
   const [sbWidth, setSbWidth] = createSignal(248);
   const [themeMode, setThemeMode] = createSignal<ThemeMode>(initParams.themeOverride || "dark");
   const [history, setHistory] = createSignal<HistoryEntry[]>([]);
@@ -107,6 +179,23 @@ export function App() {
   let saveTimer: number | undefined;
   let composingInEditor = false;
   let preFocusSnapshot: { sidebar: boolean; mode: ViewMode } | null = null;
+
+  const setSidebarVisible = (next: boolean) => {
+    if (!next && document.getElementById("folio-sidebar")?.contains(document.activeElement)) {
+      (document.activeElement as HTMLElement | null)?.blur?.();
+    }
+    setSidebarOpen(next);
+    try {
+      window.localStorage?.setItem("folio:sidebar-open", next ? "1" : "0");
+    } catch {
+      // ignore storage errors
+    }
+  };
+
+  const toggleSidebar = () => {
+    preFocusSnapshot = null;
+    setSidebarVisible(!sidebarOpen());
+  };
 
   const startSidebarResize = (e: PointerEvent) => {
     e.preventDefault();
@@ -240,13 +329,13 @@ export function App() {
 
   const toggleFocusMode = () => {
     if (!sidebarOpen() && preFocusSnapshot) {
-      setSidebarOpen(preFocusSnapshot.sidebar);
+      setSidebarVisible(preFocusSnapshot.sidebar);
       setViewMode(preFocusSnapshot.mode);
       preFocusSnapshot = null;
       return;
     }
     preFocusSnapshot = { sidebar: sidebarOpen(), mode: viewMode() };
-    setSidebarOpen(false);
+    setSidebarVisible(false);
     setViewMode("preview");
   };
 
@@ -297,6 +386,14 @@ export function App() {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.isComposing) return;
 
+      // Orb sidebar toggle (⌘B) works in every view/focus state outside modal dialogs
+      if (isSidebarShortcut(e) && !searchOpen() && !mountModalOpen()) {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleSidebar();
+        return;
+      }
+
       const sidebarFocused =
         isFindShortcut(e) &&
         Boolean(document.getElementById("folio-sidebar")?.contains(document.activeElement));
@@ -333,7 +430,7 @@ export function App() {
       if (e.key === "Escape") {
         if (sidebarOpen() && window.matchMedia?.("(max-width: 720px)").matches) {
           e.preventDefault();
-          setSidebarOpen(false);
+          setSidebarVisible(false);
           return;
         }
         if (selectedMath()) {
@@ -352,13 +449,6 @@ export function App() {
       if (isToggleSplitShortcut(e)) {
         e.preventDefault();
         setViewMode((prev) => (prev === "split" ? "preview" : "split"));
-        return;
-      }
-
-      if (isSidebarShortcut(e)) {
-        e.preventDefault();
-        preFocusSnapshot = null;
-        setSidebarOpen((v) => !v);
         return;
       }
 
@@ -393,7 +483,7 @@ export function App() {
       const sectionTarget = sidebarSectionShortcut(e);
       if (sectionTarget) {
         e.preventDefault();
-        setSidebarOpen(true);
+        setSidebarVisible(true);
         requestAnimationFrame(() => {
           const region = document.querySelector<HTMLElement>(
             `[data-section="${sectionTarget}"] button.row:not(:disabled)`,
@@ -402,7 +492,7 @@ export function App() {
         });
       }
     };
-    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keydown", onKeyDown, true);
 
     void (async () => {
       try {
@@ -435,7 +525,7 @@ export function App() {
     onCleanup(() => {
       mql?.removeEventListener?.("change", onMqlChange);
       document.removeEventListener("selectionchange", onSelectionChange);
-      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keydown", onKeyDown, true);
       unlistenTheme?.();
       unlistenWorkspace?.();
       if (saveTimer) window.clearTimeout(saveTimer);
@@ -507,9 +597,34 @@ export function App() {
     }
   };
 
+  const cleanTags = createMemo(() => {
+    const raw = doc()?.tags || [];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const item of raw) {
+      const formatted = formatTagLabel(String(item));
+      if (!formatted) continue;
+      const key = formatted.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(formatted);
+    }
+    return out;
+  });
+
   const frontmatterEntries = createMemo(() => {
     const fm = doc()?.frontmatter || {};
-    return Object.entries(fm).filter(([k]) => k !== "title" && k !== "tags");
+    const out: Array<[string, string]> = [];
+    for (const [k, v] of Object.entries(fm)) {
+      if (HIDDEN_FRONTMATTER_KEYS.has(k.trim().toLowerCase())) continue;
+      if (v === null || v === undefined || typeof v === "boolean" || typeof v === "object") {
+        continue;
+      }
+      const text = String(v).replace(/\s+/g, " ").trim();
+      if (!text || text.length > 42) continue;
+      out.push([k.trim(), text]);
+    }
+    return out;
   });
 
   return (
@@ -524,7 +639,7 @@ export function App() {
         class="sidebar-backdrop"
         aria-label="Close sidebar"
         tabIndex={-1}
-        onClick={() => setSidebarOpen(false)}
+        onClick={() => setSidebarVisible(false)}
       />
 
       <Sidebar
@@ -564,10 +679,7 @@ export function App() {
             aria-expanded={sidebarOpen()}
             aria-controls="folio-sidebar"
             title={`Toggle sidebar (${SHORTCUT_LABELS.sidebar})`}
-            onClick={() => {
-              preFocusSnapshot = null;
-              setSidebarOpen((v) => !v);
-            }}
+            onClick={toggleSidebar}
           >
             <Ic.SidebarIcon />
           </button>
@@ -767,22 +879,48 @@ export function App() {
                           : `Human · ${d().provenance.author || "thomas"}`}
                       </span>
 
-                      <span class="prov-meta-pill">
-                        {d().provenance.source_type || d().provider}
-                      </span>
-
-                      <Show when={d().external_id && d().provider === "hindsight"}>
-                        <span class="prov-id-pill">{d().external_id}</span>
+                      <Show
+                        when={
+                          !d().provenance.is_agent_summary ||
+                          (d().provenance.source_type &&
+                            !/^knowledge[_-]page$/i.test(d().provenance.source_type || ""))
+                        }
+                      >
+                        <span class="prov-meta-pill">
+                          {d().provenance.source_type || d().provider}
+                        </span>
                       </Show>
 
-                      <For each={d().tags}>
-                        {(tag) => <span class="tag-pill">#{tag}</span>}
+                      <Show when={d().external_id && d().provider === "hindsight"}>
+                        <span class="prov-id-pill" title={d().external_id || undefined}>
+                          {formatShortExternalId(d().external_id || "")}
+                        </span>
+                      </Show>
+
+                      <Show when={formatShortDate(d().provenance.original_date || d().updated_at)}>
+                        {(shortDate) => (
+                          <span
+                            class="prov-meta-pill"
+                            title={d().provenance.original_date || d().updated_at || undefined}
+                          >
+                            {shortDate()}
+                          </span>
+                        )}
+                      </Show>
+
+                      <For each={cleanTags()}>
+                        {(tag) => (
+                          <span class="tag-pill" title={tag}>
+                            {tag}
+                          </span>
+                        )}
                       </For>
 
                       <For each={frontmatterEntries()}>
                         {([k, v]) => (
-                          <span class="fm-pill">
-                            <span class="fm-key">{k}:</span> {String(v)}
+                          <span class="fm-pill" title={`${k}: ${v}`}>
+                            <span class="fm-key">{k}:</span>
+                            <span class="fm-val">{v}</span>
                           </span>
                         )}
                       </For>

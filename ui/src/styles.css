@@ -564,24 +564,144 @@ select:focus:not(:focus-visible) {
   color: var(--fg-3);
 }
 
-.bank-select-inline {
-  max-width: 108px;
-  height: 20px;
-  padding: 0 5px;
-  border-radius: var(--radius-xs);
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--fg-3);
-  font: 500 11px/1 var(--mono);
-  overflow: hidden;
-  text-overflow: ellipsis;
+.bank-picker-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
 }
 
-.bank-select-inline:hover,
-.bank-select-inline:focus {
+.bank-picker-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 124px;
+  height: 22px;
+  padding: 0 6px 0 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--fg-2);
+  font: 500 11.5px/1 var(--mono);
+  transition:
+    background 90ms ease,
+    border-color 90ms ease,
+    color 90ms ease;
+}
+
+.bank-picker-btn:hover,
+.bank-picker-btn.open,
+.bank-picker-btn:focus-visible {
   background: var(--bg-hover);
-  border-color: var(--stroke-soft);
+  border-color: var(--stroke);
+  color: var(--fg-strong);
+  outline: none;
+}
+
+.bank-picker-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.15;
+}
+
+.bank-picker-chevron {
+  flex: none;
+  color: var(--fg-3);
+  transition: transform 110ms ease;
+}
+
+.bank-picker-btn.open .bank-picker-chevron {
+  transform: rotate(180deg);
+  color: var(--fg-2);
+}
+
+.overlay-popover {
+  position: fixed;
+  z-index: 120;
+  box-sizing: border-box;
+  width: 204px;
+  max-width: calc(100vw - 16px);
+  padding: var(--menu-inset, 5px);
+  border: 1px solid var(--overlay-border);
+  border-radius: var(--overlay-menu-radius);
+  background: var(--overlay-surface);
   color: var(--fg);
+  box-shadow: var(--shadow-lg);
+  font: 13px/1.4 var(--sans);
+  -webkit-app-region: no-drag;
+}
+
+.overlay-popover button:focus-visible {
+  outline: none;
+}
+
+.picker-group {
+  padding: 4px 8px 5px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--fg-3);
+}
+
+.picker-list {
+  max-height: min(260px, 48vh);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.picker-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 28px;
+  padding: 5px 8px;
+  gap: 8px;
+  text-align: left;
+  border-radius: var(--menu-item-radius, 5px);
+  background: transparent;
+  color: var(--fg);
+}
+
+.picker-row:hover,
+.picker-row[data-active="true"] {
+  background: var(--overlay-hover);
+}
+
+.picker-row[aria-selected="true"] {
+  color: var(--fg-strong);
+}
+
+.picker-row-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.bank-option-id {
+  font: 500 12px/1.25 var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-row-copy small {
+  color: var(--fg-3);
+  font-size: 11px;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-check {
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: var(--fg-strong);
 }
 
 .sb-mini-btn {
@@ -994,12 +1114,16 @@ body.resizing .sb-resize {
   align-items: center;
   gap: 6px;
   height: 22px;
+  max-width: 260px;
   padding: 0 8px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--stroke);
   background: var(--bg-inset);
   font: 500 11.5px/1 var(--sans);
   color: var(--fg-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .prov-dot {
@@ -1022,20 +1146,33 @@ body.resizing .sb-resize {
   align-items: center;
   gap: 4px;
   height: 22px;
+  max-width: 240px;
   padding: 0 7px;
   border-radius: var(--radius-sm);
   background: transparent;
   border: 1px solid var(--stroke-soft);
   font: 450 11px/1 var(--mono);
   color: var(--fg-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .fm-key {
+  flex: none;
   color: var(--fg-4);
+}
+
+.fm-val {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tag-pill {
   color: var(--fg-2);
+  background: color-mix(in srgb, var(--fg) 3.5%, transparent);
 }
 
 .grounding-strip {

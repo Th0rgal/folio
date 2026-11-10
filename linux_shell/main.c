@@ -159,7 +159,7 @@ static gboolean on_wv_super_meta(GtkWidget *wv, GdkEvent *ev, gpointer ud) {
     guint *st = (ev->type == GDK_KEY_PRESS || ev->type == GDK_KEY_RELEASE) ? &ev->key.state :
                 (ev->type == GDK_BUTTON_PRESS || ev->type == GDK_BUTTON_RELEASE) ? &ev->button.state :
                 (ev->type == GDK_SCROLL) ? &ev->scroll.state : NULL;
-    if (st && (*st & (GDK_SUPER_MASK | GDK_MOD4_MASK)) && !(*st & GDK_CONTROL_MASK)) {
+    if (st && (*st & (GDK_SUPER_MASK | GDK_MOD4_MASK | GDK_HYPER_MASK)) && !(*st & GDK_CONTROL_MASK)) {
         *st |= GDK_META_MASK;
     }
     return FALSE;
@@ -348,6 +348,7 @@ int main(int argc, char **argv) {
         GdkRGBA clear = { 0, 0, 0, 0 };
         webkit_web_view_set_background_color(WEBKIT_WEB_VIEW(wv), &clear);
     }
+    g_signal_connect(win, "event", G_CALLBACK(on_wv_super_meta), NULL);
     g_signal_connect(wv, "event", G_CALLBACK(on_wv_super_meta), NULL);
     g_signal_connect(wv, "decide-policy", G_CALLBACK(on_decide_policy), NULL);
     gtk_container_add(GTK_CONTAINER(win), wv);
@@ -365,6 +366,7 @@ int main(int argc, char **argv) {
     }
     webkit_web_view_load_uri(WEBKIT_WEB_VIEW(wv), is_confined_shell_uri(launch_url) ? launch_url : default_url);
     gtk_widget_show_all(win);
+    gtk_widget_grab_focus(wv);
     gtk_main();
 #else
     (void)argc; (void)argv;

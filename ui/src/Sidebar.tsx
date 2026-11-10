@@ -1,6 +1,182 @@
-import { For, Show, createSignal } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
+import { Portal } from "solid-js/web";
 import * as Ic from "./icons";
 import type { ProviderStatus, ThemeMode, TreeNode } from "./types";
+
+function BankPicker(props: {
+  activeBank: string;
+  banks: Array<{ bank_id: string; name?: string }>;
+  onChangeBank: (bankId: string) => void;
+}) {
+  const [open, setOpen] = createSignal(false);
+  const [pos, setPos] = createSignal({ top: 0, left: 0 });
+  const [hoverId, setHoverId] = createSignal<string | null>(null);
+
+  let triggerRef: HTMLButtonElement | undefined;
+  let popoverRef: HTMLDivElement | undefined;
+
+  const options = createMemo(() => {
+    const list =
+      props.banks.length > 0
+        ? props.banks
+        : [{ bank_id: props.activeBank, name: props.activeBank }];
+    if (!list.some((b) => b.bank_id === props.activeBank)) {
+      return [{ bank_id: props.activeBank, name: props.activeBank }, ...list];
+    }
+    return list;
+  });
+
+  const updatePosition = () => {
+    if (!triggerRef) return;
+    const rect = triggerRef.getBoundingClientRect();
+    const width = 204;
+    const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
+    const top = Math.min(rect.bottom + 4, window.innerHeight - 180);
+    setPos({ top, left });
+  };
+
+  const toggle = () => {
+    if (open()) {
+      setOpen(false);
+      return;
+    }
+    updatePosition();
+    setHoverId(props.activeBank);
+    setOpen(true);
+    requestAnimationFrame(() => {
+      const selected = popoverRef?.querySelector<HTMLButtonElement>('[aria-selected="true"]');
+      (selected ?? popoverRef?.querySelector<HTMLButtonElement>("button.picker-row"))?.focus({
+        preventScroll: true,
+      });
+    });
+  };
+
+  createEffect(() => {
+    if (!open()) return;
+    const onPointerDown = (ev: PointerEvent) => {
+      const target = ev.target as Node | null;
+      if (!target) return;
+      if (triggerRef?.contains(target) || popoverRef?.contains(target)) return;
+      setOpen(false);
+    };
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        ev.stopPropagation();
+        setOpen(false);
+        triggerRef?.focus({ preventScroll: true });
+      }
+    };
+    const onResize = () => updatePosition();
+    window.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("resize", onResize);
+    onCleanup(() => {
+      window.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("resize", onResize);
+    });
+  });
+
+  const stepFocus = (delta: number) => {
+    const list = options();
+    if (!list.length) return;
+    const curIdx = Math.max(
+      0,
+      list.findIndex((b) => b.bank_id === (hoverId() ?? props.activeBank)),
+    );
+    const nextIdx = (curIdx + delta + list.length) % list.length;
+    const next = list[nextIdx];
+    if (!next) return;
+    setHoverId(next.bank_id);
+    popoverRef
+      ?.querySelectorAll<HTMLButtonElement>("button.picker-row")
+      ?.[nextIdx]?.focus({ preventScroll: true });
+  };
+
+  return (
+    <div class="bank-picker-wrap">
+      <button
+        ref={triggerRef}
+        type="button"
+        class={`bank-picker-btn ${open() ? "open" : ""}`}
+        data-testid="bank-picker-btn"
+        aria-label="Hindsight memory bank"
+        aria-haspopup="listbox"
+        aria-expanded={open()}
+        title={`Memory bank: ${props.activeBank}`}
+        onClick={toggle}
+      >
+        <span class="bank-picker-label">{props.activeBank}</span>
+        <Ic.ChevronDown size={11} class="bank-picker-chevron" />
+      </button>
+
+      <Show when={open()}>
+        <Portal>
+          <div
+            ref={popoverRef}
+            class="overlay-popover picker bank-popover"
+            role="listbox"
+            aria-label="Hindsight memory bank"
+            data-testid="bank-picker-popover"
+            style={{ top: `${pos().top}px`, left: `${pos().left}px` }}
+            onKeyDown={(e) => {
+              if (e.key === "ArrowDown") {
+                e.preventDefault();
+                e.stopPropagation();
+                stepFocus(1);
+              } else if (e.key === "ArrowUp") {
+                e.preventDefault();
+                e.stopPropagation();
+                stepFocus(-1);
+              }
+            }}
+          >
+            <div class="picker-group">Memory bank</div>
+            <div class="picker-list">
+              <For each={options()}>
+                {(b) => {
+                  const selected = () => b.bank_id === props.activeBank;
+                  const active = () => (hoverId() ?? props.activeBank) === b.bank_id;
+                  return (
+                    <button
+                      type="button"
+                      role="option"
+                      class="picker-row"
+                      aria-selected={selected()}
+                      data-active={active()}
+                      onPointerMove={() => setHoverId(b.bank_id)}
+                      onFocus={() => setHoverId(b.bank_id)}
+                      onClick={() => {
+                        setOpen(false);
+                        if (b.bank_id !== props.activeBank) {
+                          props.onChangeBank(b.bank_id);
+                        }
+                        triggerRef?.focus({ preventScroll: true });
+                      }}
+                    >
+                      <span class="picker-row-copy">
+                        <span class="bank-option-id">{b.bank_id}</span>
+                        <Show when={b.name && b.name !== b.bank_id}>
+                          <small>{b.name}</small>
+                        </Show>
+                      </span>
+                      <Show when={selected()}>
+                        <span class="picker-check" aria-hidden="true">
+                          <Ic.CheckIcon size={13} />
+                        </span>
+                      </Show>
+                    </button>
+                  );
+                }}
+              </For>
+            </div>
+          </div>
+        </Portal>
+      </Show>
+    </div>
+  );
+}
 
 function TreeBranch(props: {
   node: TreeNode;
@@ -180,22 +356,11 @@ export function Sidebar(props: {
               </Show>
             </span>
 
-            <select
-              class="bank-select-inline"
-              aria-label="Hindsight memory bank"
-              value={props.activeBank}
-              onChange={(e) => props.onChangeBank(e.currentTarget.value)}
-            >
-              <For
-                each={
-                  props.banks.length > 0
-                    ? props.banks
-                    : [{ bank_id: props.activeBank, name: props.activeBank }]
-                }
-              >
-                {(b) => <option value={b.bank_id}>{b.bank_id}</option>}
-              </For>
-            </select>
+            <BankPicker
+              activeBank={props.activeBank}
+              banks={props.banks}
+              onChangeBank={props.onChangeBank}
+            />
           </div>
 
           <div class="group" data-section="hindsight" data-testid="hindsight-tree">

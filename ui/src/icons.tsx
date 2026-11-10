@@ -144,3 +144,9 @@ export const FindNextIcon = (p: IconProps) => (
     <path d="M8 3.4v9.2M4.4 9 8 12.6 11.6 9" />
   </I>
 );
+
+export const CheckIcon = (p: IconProps) => (
+  <I size={13} sw={1.45} {...p}>
+    <path d="M3.2 8.4 6.5 11.6 12.8 4.6" />
+  </I>
+);

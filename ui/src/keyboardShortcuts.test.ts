@@ -49,6 +49,17 @@ describe("Orb-matched keyboard shortcuts", () => {
   it("matches Cmd+F local find, Cmd+B sidebar, Cmd+\\ focus mode, Cmd+/ source, Cmd+Shift+/ split", () => {
     expect(isFindShortcut(ev({ key: "f", code: "KeyF", metaKey: true }), false)).toBe(true);
     expect(isSidebarShortcut(ev({ key: "b", code: "KeyB", metaKey: true }), false)).toBe(true);
+    expect(
+      isSidebarShortcut(
+        ev({
+          key: "b",
+          code: "KeyB",
+          metaKey: false,
+          getModifierState: (mod) => mod === "Super",
+        }),
+        false,
+      ),
+    ).toBe(true);
     expect(isFocusModeShortcut(ev({ key: "\\", code: "Backslash", metaKey: true }), false)).toBe(true);
     expect(isToggleSourceShortcut(ev({ key: "/", code: "Slash", metaKey: true }), false)).toBe(true);
     expect(isToggleSplitShortcut(ev({ key: "?", code: "Slash", metaKey: true, shiftKey: true }), false)).toBe(true);

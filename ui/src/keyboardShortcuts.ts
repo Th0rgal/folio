@@ -17,6 +17,7 @@ export interface KeyEventLike {
   altKey: boolean;
   isComposing?: boolean;
   defaultPrevented?: boolean;
+  getModifierState?: (keyArg: string) => boolean;
 }
 
 export const SHORTCUT_LABELS = {
@@ -47,7 +48,10 @@ export function isMacKeyboardPlatform(): boolean {
 
 /** Command on macOS/iOS, Command or Control elsewhere (never both simultaneously). */
 export function hasPrimaryModifier(event: KeyEventLike, macOnly = isMacKeyboardPlatform()): boolean {
-  return macOnly ? event.metaKey && !event.ctrlKey : event.metaKey !== event.ctrlKey;
+  const meta = Boolean(
+    event.metaKey || event.getModifierState?.("Super") || event.getModifierState?.("Meta"),
+  );
+  return macOnly ? meta && !event.ctrlKey : meta !== event.ctrlKey;
 }
 
 /** Command-Shift-F (`⌘⇧F`) / Ctrl-Shift-F: Global Unified Search & Recall (Orb contract). */
