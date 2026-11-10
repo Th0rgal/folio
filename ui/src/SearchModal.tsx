@@ -1,4 +1,5 @@
 import { For, Show, createEffect, createSignal, onCleanup } from "solid-js";
+import * as Ic from "./icons";
 import { rpcInvoke } from "./rpc";
 import type { SearchHit } from "./types";
 
@@ -61,55 +62,59 @@ export function SearchModal(props: {
   return (
     <Show when={props.open}>
       <div
-        class="modal-scrim"
+        class="sd-backdrop sd-backdrop-dim"
         data-testid="search-modal"
         onClick={() => props.onClose()}
       >
-        <div class="search-dialog" onClick={(e) => e.stopPropagation()}>
-          <div class="search-head">
-            <svg class="search-ico" viewBox="0 0 16 16" width="15" height="15" fill="none">
-              <circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.5" />
-              <path d="M11 11L14.2 14.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-            </svg>
-            <input
-              ref={inputRef}
-              type="text"
-              class="search-input"
-              data-testid="search-input"
-              placeholder="Search local Markdown (FTS5) + Hindsight recall (thomas)…"
-              value={query()}
-              onInput={(e) => setQuery(e.currentTarget.value)}
-              onKeyDown={(e) => {
-                if (e.isComposing) return;
-                const list = results();
-                if (e.key === "Escape") {
-                  e.preventDefault();
-                  props.onClose();
-                } else if (e.key === "ArrowDown") {
-                  e.preventDefault();
-                  if (list.length > 0) setSelectedIndex((i) => (i + 1) % list.length);
-                } else if (e.key === "ArrowUp") {
-                  e.preventDefault();
-                  if (list.length > 0) setSelectedIndex((i) => (i - 1 + list.length) % list.length);
-                } else if (e.key === "Enter") {
-                  e.preventDefault();
-                  const hit = list[selectedIndex()];
-                  if (hit) {
-                    props.onSelectUri(hit.uri);
+        <div class="sd-dialog" onClick={(e) => e.stopPropagation()}>
+          <div class="sd-header">
+            <div class="sd-searchbar">
+              <span class="sd-search-ico">
+                <Ic.SearchIcon size={15} />
+              </span>
+              <input
+                ref={inputRef}
+                type="text"
+                class="sd-input"
+                data-testid="search-input"
+                placeholder={`Search local Markdown + Hindsight (${props.activeBank})…`}
+                value={query()}
+                onInput={(e) => setQuery(e.currentTarget.value)}
+                onKeyDown={(e) => {
+                  if (e.isComposing) return;
+                  const list = results();
+                  if (e.key === "Escape") {
+                    e.preventDefault();
                     props.onClose();
+                  } else if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    if (list.length > 0) setSelectedIndex((i) => (i + 1) % list.length);
+                  } else if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    if (list.length > 0)
+                      setSelectedIndex((i) => (i - 1 + list.length) % list.length);
+                  } else if (e.key === "Enter") {
+                    e.preventDefault();
+                    const hit = list[selectedIndex()];
+                    if (hit) {
+                      props.onSelectUri(hit.uri);
+                      props.onClose();
+                    }
                   }
-                }
-              }}
-            />
-            <button
-              type="button"
-              class={`filter-toggle ${includeHindsight() ? "on" : ""}`}
-              onClick={() => setIncludeHindsight((v) => !v)}
-              title="Toggle live Hindsight semantic recall"
-            >
-              Hindsight: {props.activeBank}
-            </button>
-            <kbd class="kbd-hint">ESC</kbd>
+                }}
+              />
+              <button
+                type="button"
+                class={`sd-tab ${includeHindsight() ? "is-active" : ""}`}
+                onClick={() => setIncludeHindsight((v) => !v)}
+                title="Toggle live Hindsight semantic recall"
+              >
+                Hindsight · {props.activeBank}
+              </button>
+              <button type="button" class="sd-esc-btn" onClick={() => props.onClose()}>
+                ESC
+              </button>
+            </div>
           </div>
 
           <div class="search-results" data-testid="search-results">
@@ -118,7 +123,7 @@ export function SearchModal(props: {
               fallback={
                 <div class="search-empty">
                   {loading()
-                    ? "Searching SQLite FTS5 & Hindsight bank…"
+                    ? "Searching SQLite FTS5 & Hindsight…"
                     : "No matching notes or Hindsight Knowledge Pages."}
                 </div>
               }
@@ -126,7 +131,7 @@ export function SearchModal(props: {
               <For each={results()}>
                 {(hit, idx) => {
                   const providerLabel = () => {
-                    if (hit.provider === "local-fs") return "Local .md";
+                    if (hit.provider === "local-fs") return "Local";
                     if (hit.provider === "hindsight") {
                       return hit.is_agent_summary ? "Hindsight · KP" : "Hindsight · Raw";
                     }
@@ -143,12 +148,16 @@ export function SearchModal(props: {
                       }}
                     >
                       <div class="search-row-top">
-                        <span class={`provider-pill p-${hit.provider} ${hit.is_agent_summary ? "agent" : "human"}`}>
+                        <span
+                          class={`provider-pill p-${hit.provider} ${hit.is_agent_summary ? "agent" : "human"}`}
+                        >
                           {providerLabel()}
                         </span>
                         <span class="search-row-title">{hit.title}</span>
                         <span class="search-row-author">
-                          {hit.is_agent_summary ? "Agent Summary" : `Human · ${hit.author || "thomas"}`}
+                          {hit.is_agent_summary
+                            ? "Agent summary"
+                            : `Human · ${hit.author || "thomas"}`}
                         </span>
                       </div>
                       <Show when={hit.snippet}>
@@ -162,9 +171,9 @@ export function SearchModal(props: {
           </div>
 
           <div class="search-foot">
-            <span>↑↓ Navigate · ↵ Open Document · ⌘K Unified Search & Recall</span>
+            <span>↑↓ Navigate · ↵ Open · ⌘K Unified Search & Recall</span>
             <Show when={loading()}>
-              <span class="search-status-pulse">Syncing recall…</span>
+              <span class="search-status-pulse">Syncing…</span>
             </Show>
           </div>
         </div>

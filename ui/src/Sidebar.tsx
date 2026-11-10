@@ -1,5 +1,6 @@
 import { For, Show, createSignal } from "solid-js";
-import type { ProviderStatus, TreeNode } from "./types";
+import * as Ic from "./icons";
+import type { ProviderStatus, ThemeMode, TreeNode } from "./types";
 
 function TreeBranch(props: {
   node: TreeNode;
@@ -15,8 +16,8 @@ function TreeBranch(props: {
     <div class="tree-branch">
       <button
         type="button"
-        class={`tree-row ${isActive() ? "active" : ""} ${isFolder() ? "is-folder" : ""}`}
-        style={{ "padding-left": `${10 + props.depth * 13}px` }}
+        class={`row tree-row ${isActive() ? "active" : ""} ${isFolder() ? "project" : "file"}`}
+        style={{ "padding-left": `${6 + props.depth * 12}px` }}
         onClick={() => {
           if (isFolder()) {
             setExpanded((v) => !v);
@@ -25,13 +26,24 @@ function TreeBranch(props: {
           }
         }}
       >
-        <span class="tree-chevron">
-          {isFolder() ? (expanded() ? "▾" : "▸") : props.node.is_agent_summary ? "◇" : "•"}
+        <span class="row-ico">
+          <Show
+            when={isFolder()}
+            fallback={
+              props.node.is_agent_summary ? (
+                <Ic.KnowledgeIcon size={13} />
+              ) : (
+                <Ic.DocIcon size={14} />
+              )
+            }
+          >
+            {expanded() ? <Ic.ChevronDown /> : <Ic.ChevronRight />}
+          </Show>
         </span>
-        <span class="tree-label">{props.node.name}</span>
+        <span class="row-label">{props.node.name}</span>
         <Show when={props.node.badge}>
           {(badge) => (
-            <span class={`tree-badge ${props.node.is_agent_summary ? "agent" : ""}`}>
+            <span class={`inbox-sb-badge ${props.node.is_agent_summary ? "agent" : ""}`}>
               {badge()}
             </span>
           )}
@@ -64,6 +76,9 @@ export function Sidebar(props: {
   banks: Array<{ bank_id: string; name?: string }>;
   hindsightStatus: ProviderStatus | undefined;
   notionStatus: ProviderStatus | undefined;
+  themeMode: ThemeMode;
+  onToggleTheme: () => void;
+  onStartResize: (ev: PointerEvent) => void;
   onSelectUri: (uri: string) => void;
   onChangeBank: (bankId: string) => void;
   onNewNote: () => void;
@@ -72,49 +87,47 @@ export function Sidebar(props: {
   onSyncNotion: () => void;
 }) {
   return (
-    <aside class="sidebar" data-testid="sidebar">
-      <div class="sidebar-top">
-        <div class="brand-row">
-          <div class="brand-mark">
-            <span class="brand-glyph">ƒ</span>
-            <span class="brand-name">Folio</span>
-          </div>
+    <aside id="folio-sidebar" class="sidebar" data-testid="sidebar">
+      <div class="sb-top" />
+
+      <nav class="sb-scroll" onContextMenu={(e) => e.preventDefault()}>
+        <div class="sb-main-nav">
+          <button type="button" class="row" onClick={props.onNewNote}>
+            <span class="row-ico">
+              <Ic.NewNoteIcon />
+            </span>
+            <span class="row-label">New Note</span>
+            <kbd>⌘N</kbd>
+          </button>
+
           <button
             type="button"
-            class="new-note-btn"
-            title="New Local Markdown Note (⌘N)"
-            onClick={props.onNewNote}
+            class="row"
+            data-testid="sidebar-search-btn"
+            onClick={props.onOpenSearch}
           >
-            + Note
+            <span class="row-ico">
+              <Ic.SearchIcon />
+            </span>
+            <span class="row-label">Search & Recall</span>
+            <kbd>⌘K</kbd>
           </button>
-        </div>
 
-        <button
-          type="button"
-          class="sidebar-search-trigger"
-          data-testid="sidebar-search-btn"
-          onClick={props.onOpenSearch}
-        >
-          <span>Search & Recall…</span>
-          <kbd>⌘K</kbd>
-        </button>
-      </div>
-
-      <div class="sidebar-scroll">
-        {/* Local Workspace Section */}
-        <section class="sb-section">
-          <div class="sb-section-head">
-            <span class="sb-section-title">Local Markdown</span>
+          {/* Local Workspace Section */}
+          <div class="section section-row">
+            <span>Local notes</span>
             <button
               type="button"
-              class="sb-mini-btn"
+              class="section-add"
               title="Mount local folder"
+              aria-label="Mount local folder"
               onClick={props.onOpenMountDialog}
             >
-              + Folder
+              <Ic.PlusIcon size={13} />
             </button>
           </div>
-          <div class="sb-tree">
+
+          <div class="group">
             <For each={props.localTree}>
               {(node) => (
                 <TreeBranch
@@ -126,25 +139,24 @@ export function Sidebar(props: {
               )}
             </For>
           </div>
-        </section>
 
-        {/* Hindsight Memory Bank Section */}
-        <section class="sb-section">
-          <div class="sb-section-head">
-            <div class="sb-title-with-dot">
+          {/* Hindsight Memory Bank Section */}
+          <div class="section section-row">
+            <span class="sb-title-with-dot">
               <span
-                class={`status-dot ${props.hindsightStatus?.connected ? "online" : "offline"}`}
+                class={`m-dot ${props.hindsightStatus?.connected ? "on" : "offline"}`}
               />
-              <span class="sb-section-title">Hindsight Memory</span>
-            </div>
-            <Show when={props.hindsightStatus?.readonly}>
-              <span class="ro-chip" title="Read-only guard enabled">RO</span>
-            </Show>
-          </div>
+              <span>Hindsight</span>
+              <Show when={props.hindsightStatus?.readonly}>
+                <span class="ro-chip" title="Read-only guard enabled">
+                  ro
+                </span>
+              </Show>
+            </span>
 
-          <div class="bank-selector-row">
             <select
-              class="bank-select"
+              class="bank-select-inline"
+              aria-label="Hindsight memory bank"
               value={props.activeBank}
               onChange={(e) => props.onChangeBank(e.currentTarget.value)}
             >
@@ -155,19 +167,19 @@ export function Sidebar(props: {
                     : [{ bank_id: props.activeBank, name: props.activeBank }]
                 }
               >
-                {(b) => <option value={b.bank_id}>bank: {b.bank_id}</option>}
+                {(b) => <option value={b.bank_id}>{b.bank_id}</option>}
               </For>
             </select>
           </div>
 
-          <div class="sb-tree" data-testid="hindsight-tree">
+          <div class="group" data-testid="hindsight-tree">
             <Show
               when={props.hindsightTree.length > 0}
               fallback={
-                <div class="sb-empty-hint">
+                <div class="row note">
                   {props.hindsightStatus?.connected
-                    ? "Loading Knowledge Pages…"
-                    : "Offline cache · connect key in Settings"}
+                    ? "Loading knowledge pages…"
+                    : "Offline cache · connect key in keyring"}
                 </div>
               }
             >
@@ -183,21 +195,19 @@ export function Sidebar(props: {
               </For>
             </Show>
           </div>
-        </section>
 
-        {/* Optional Notion Adapter Section */}
-        <Show when={props.notionStatus?.connected || props.notionTree.length > 0}>
-          <section class="sb-section">
-            <div class="sb-section-head">
-              <div class="sb-title-with-dot">
-                <span class="status-dot online" />
-                <span class="sb-section-title">Notion Mirror</span>
-              </div>
+          {/* Optional Notion Adapter Section */}
+          <Show when={props.notionStatus?.connected || props.notionTree.length > 0}>
+            <div class="section section-row">
+              <span class="sb-title-with-dot">
+                <span class="m-dot on" />
+                <span>Notion</span>
+              </span>
               <button type="button" class="sb-mini-btn" onClick={props.onSyncNotion}>
                 Sync
               </button>
             </div>
-            <div class="sb-tree">
+            <div class="group">
               <For each={props.notionTree}>
                 {(node) => (
                   <TreeBranch
@@ -209,13 +219,24 @@ export function Sidebar(props: {
                 )}
               </For>
             </div>
-          </section>
-        </Show>
+          </Show>
+        </div>
+      </nav>
+
+      <div class="sb-foot">
+        <button
+          type="button"
+          class="gear-btn"
+          title="Toggle appearance"
+          onClick={props.onToggleTheme}
+        >
+          {props.themeMode === "dark" ? <Ic.MoonIcon size={14} /> : <Ic.SunIcon size={14} />}
+          <span>{props.themeMode === "dark" ? "Dark" : "Light"}</span>
+        </button>
+        <span class="sb-foot-meta">FTS5 · KaTeX</span>
       </div>
 
-      <div class="sidebar-foot">
-        <span class="foot-stat">SQLite FTS5 · KaTeX Offline</span>
-      </div>
+      <div class="sb-resize" onPointerDown={props.onStartResize} />
     </aside>
   );
 }

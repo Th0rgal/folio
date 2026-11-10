@@ -289,7 +289,7 @@ int main(int argc, char **argv) {
         }
         GtkCssProvider *glass = gtk_css_provider_new();
         gtk_css_provider_load_from_data(glass,
-            "window, window.background { background-color: rgba(0,0,0,0); background-image: none; }",
+            "window, window.background { background-color: rgba(0,0,0,0); background-image: none; backdrop-filter: blur(20px); }",
             -1, NULL);
         gtk_style_context_add_provider_for_screen(gdk_screen_get_default(),
             GTK_STYLE_PROVIDER(glass), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
@@ -297,8 +297,9 @@ int main(int argc, char **argv) {
     }
 
     GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_default_icon_name("folio");
     gtk_window_set_title(GTK_WINDOW(win), "Folio");
-    gtk_window_set_default_size(GTK_WINDOW(win), 1380, 880);
+    gtk_window_set_default_size(GTK_WINDOW(win), 1470, 923);
     {
         GdkScreen *screen = gtk_widget_get_screen(win);
         GdkVisual *rgba = gdk_screen_get_rgba_visual(screen);

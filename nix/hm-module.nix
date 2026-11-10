@@ -60,9 +60,9 @@ in
       };
 
       opacity = lib.mkOption {
-        type = lib.types.str;
-        default = "0.88 0.88";
-        description = "Hyprland active/inactive opacity for Folio's RGBA frosted-glass chrome.";
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        description = "Optional Hyprland window opacity override (`null` matches Orb so CSS surface/sidebar translucency composites cleanly without dimming foreground text).";
       };
 
       rounding = lib.mkOption {
@@ -110,15 +110,19 @@ in
         lib.mkIf (cfg.hyprland.enable && config.wayland.windowManager.hyprland.enable) {
           wayland.windowManager.hyprland.settings = {
             window_rule = lib.mkAfter [
-              {
-                name = "folio-vibrancy";
-                match = {
-                  class = "^(folio|\\.folio-unwrapped|folio-desktop)$";
-                };
-                opacity = cfg.hyprland.opacity;
-                rounding = cfg.hyprland.rounding;
-                border_size = cfg.hyprland.borderSize;
-              }
+              (
+                {
+                  name = "folio-vibrancy";
+                  match = {
+                    class = "^(folio|\\.folio-unwrapped|folio-desktop)$";
+                  };
+                  rounding = cfg.hyprland.rounding;
+                  border_size = cfg.hyprland.borderSize;
+                }
+                // lib.optionalAttrs (cfg.hyprland.opacity != null) {
+                  opacity = cfg.hyprland.opacity;
+                }
+              )
             ];
 
             bind = lib.mkIf (cfg.hyprland.launchBind != null) (

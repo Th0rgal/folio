@@ -143,11 +143,14 @@ class CredentialResolver:
     @staticmethod
     def _lookup_os_keyring(logical_name: str) -> Optional[str]:
         sys_name = platform.system().lower()
-        env_names = SECRET_ENV_MAP.get(logical_name, (logical_name.upper(),))
+        candidates: list[str] = []
+        for k in (*SECRET_ENV_MAP.get(logical_name, ()), logical_name, logical_name.upper()):
+            if k and k not in candidates:
+                candidates.append(k)
         if sys_name == "linux":
             secret_tool = CredentialResolver._resolve_binary("secret-tool")
             if secret_tool:
-                for key_name in env_names:
+                for key_name in candidates:
                     for attr_pair in (
                         ("service", "folio", "account", key_name),
                         ("application", "folio", "key", key_name),

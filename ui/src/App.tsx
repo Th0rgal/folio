@@ -3,6 +3,7 @@ import { EquationPopover } from "./EquationPopover";
 import { MarkdownView } from "./MarkdownView";
 import { SearchModal } from "./SearchModal";
 import { Sidebar } from "./Sidebar";
+import * as Ic from "./icons";
 import { applyMathEdit, extractMathSpans } from "./mathParser";
 import { detectPlatform, listenDesktopEvent, rpcInvoke } from "./rpc";
 import type {
@@ -66,6 +67,7 @@ export function App() {
   const [saving, setSaving] = createSignal(false);
   const [viewMode, setViewMode] = createSignal<ViewMode>(initParams.modeOverride || "preview");
   const [sidebarOpen, setSidebarOpen] = createSignal(true);
+  const [sbWidth, setSbWidth] = createSignal(248);
   const [themeMode, setThemeMode] = createSignal<ThemeMode>(initParams.themeOverride || "dark");
   const [macros, setMacros] = createSignal<Record<string, string>>({
     "\\R": "\\mathbb{R}",
@@ -82,6 +84,19 @@ export function App() {
 
   let saveTimer: number | undefined;
   let composingInEditor = false;
+
+  const startSidebarResize = (e: PointerEvent) => {
+    e.preventDefault();
+    document.body.classList.add("resizing");
+    const move = (ev: PointerEvent) => setSbWidth(Math.min(420, Math.max(188, ev.clientX)));
+    const up = () => {
+      document.body.classList.remove("resizing");
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
 
   const applyThemeToDom = (mode: ThemeMode) => {
     setThemeMode(mode);
@@ -234,7 +249,10 @@ export function App() {
         setLocalTree(data.local_tree || []);
         setActiveBank(data.active_bank || "thomas");
         if (data.macros) setMacros(data.macros);
-        if (!initParams.themeOverride && (data.omarchy_mode === "light" || data.omarchy_mode === "dark")) {
+        if (
+          !initParams.themeOverride &&
+          (data.omarchy_mode === "light" || data.omarchy_mode === "dark")
+        ) {
           applyThemeToDom(data.omarchy_mode);
         }
 
@@ -262,7 +280,6 @@ export function App() {
   });
 
   createEffect(() => {
-    // Keep selectedMath synchronized if raw markdown changed
     const currentSpan = selectedMath();
     if (!currentSpan) return;
     const spans = extractMathSpans(draftMarkdown());
@@ -333,131 +350,157 @@ export function App() {
 
   return (
     <div
-      class={`folio-shell ${sidebarOpen() ? "" : "sb-collapsed"}`}
+      class={`app folio-shell ${sidebarOpen() ? "" : "sb-hidden"}`}
+      style={{ "--sb-w": `${sbWidth()}px` }}
       data-testid="folio-shell"
       onClick={() => setSelectedMath(null)}
     >
-      <Show when={sidebarOpen()}>
-        <Sidebar
-          localTree={localTree()}
-          hindsightTree={hindsightTree()}
-          notionTree={notionTree()}
-          activeUri={doc()?.uri ?? null}
-          activeBank={activeBank()}
-          banks={boot()?.banks || []}
-          hindsightStatus={boot()?.providers.hindsight}
-          notionStatus={boot()?.providers.notion}
-          onSelectUri={(u) => void openDocument(u)}
-          onChangeBank={(b) => {
-            setActiveBank(b);
-            void refreshHindsightTree(b);
-          }}
-          onNewNote={() => void handleCreateNote()}
-          onOpenSearch={() => setSearchOpen(true)}
-          onOpenMountDialog={() => setMountModalOpen(true)}
-          onSyncNotion={() => {
-            void rpcInvoke<{ tree: TreeNode[] }>("notion_sync", { limit: 20 }).then((r) =>
-              setNotionTree(r.tree || []),
-            );
-          }}
-        />
-      </Show>
+      <button
+        type="button"
+        class="sidebar-backdrop"
+        aria-label="Close sidebar"
+        tabIndex={-1}
+        onClick={() => setSidebarOpen(false)}
+      />
 
-      <main class="workspace-pane">
-        {/* Top Chromeless Header Bar */}
-        <header class="topbar">
-          <div class="topbar-left">
-            <button
-              type="button"
-              class="icon-btn"
-              title="Toggle Sidebar (⌘\\)"
-              onClick={() => setSidebarOpen((v) => !v)}
-            >
-              ☰
-            </button>
+      <Sidebar
+        localTree={localTree()}
+        hindsightTree={hindsightTree()}
+        notionTree={notionTree()}
+        activeUri={doc()?.uri ?? null}
+        activeBank={activeBank()}
+        banks={boot()?.banks || []}
+        hindsightStatus={boot()?.providers.hindsight}
+        notionStatus={boot()?.providers.notion}
+        themeMode={themeMode()}
+        onToggleTheme={() => applyThemeToDom(themeMode() === "dark" ? "light" : "dark")}
+        onStartResize={startSidebarResize}
+        onSelectUri={(u) => void openDocument(u)}
+        onChangeBank={(b) => {
+          setActiveBank(b);
+          void refreshHindsightTree(b);
+        }}
+        onNewNote={() => void handleCreateNote()}
+        onOpenSearch={() => setSearchOpen(true)}
+        onOpenMountDialog={() => setMountModalOpen(true)}
+        onSyncNotion={() => {
+          void rpcInvoke<{ tree: TreeNode[] }>("notion_sync", { limit: 20 }).then((r) =>
+            setNotionTree(r.tree || []),
+          );
+        }}
+      />
 
-            <Show when={doc()}>
-              {(d) => (
-                <div class="breadcrumbs">
-                  <span class={`crumb-provider p-${d().provider}`}>
-                    {d().provider === "local-fs"
-                      ? "Local"
-                      : d().provider === "hindsight"
-                        ? `Hindsight · ${d().provenance.bank_id || activeBank()}`
-                        : "Notion"}
-                  </span>
+      {/* Unified Orb Titlebar */}
+      <header class="titlebar">
+        <div class="tb-left">
+          <button
+            type="button"
+            class="icon-btn"
+            aria-label="Toggle sidebar"
+            aria-expanded={sidebarOpen()}
+            aria-controls="folio-sidebar"
+            title="Toggle sidebar (⌘\\)"
+            onClick={() => setSidebarOpen((v) => !v)}
+          >
+            <Ic.SidebarIcon />
+          </button>
+          <button
+            type="button"
+            class="icon-btn"
+            aria-label="Search & Recall"
+            title="Search & Recall (⌘K)"
+            onClick={() => setSearchOpen(true)}
+          >
+            <Ic.SearchIcon />
+          </button>
+        </div>
+
+        <div class="tb-title">
+          <Show when={doc()} fallback={<span class="crumb-folder">Folio</span>}>
+            {(d) => (
+              <div class="breadcrumbs">
+                <span class="crumb-provider">
+                  {d().provider === "local-fs"
+                    ? "Local"
+                    : d().provider === "hindsight"
+                      ? `Hindsight · ${d().provenance.bank_id || activeBank()}`
+                      : "Notion"}
+                </span>
+                <span class="crumb-sep">/</span>
+                <Show when={d().folder_path}>
+                  <span class="crumb-folder">{d().folder_path}</span>
                   <span class="crumb-sep">/</span>
-                  <Show when={d().folder_path}>
-                    <span class="crumb-folder">{d().folder_path}</span>
-                    <span class="crumb-sep">/</span>
-                  </Show>
-                  <span class="crumb-title">{d().title}</span>
-                  <Show when={dirty() || saving()}>
-                    <span class="save-indicator">{saving() ? "Saving…" : "Edited"}</span>
-                  </Show>
-                </div>
-              )}
-            </Show>
-          </div>
+                </Show>
+                <span class="crumb-title">{d().title}</span>
+                <Show when={dirty() || saving()}>
+                  <span class="save-indicator">{saving() ? "Saving…" : "Edited"}</span>
+                </Show>
+              </div>
+            )}
+          </Show>
+        </div>
 
-          <div class="topbar-right">
-            <div class="mode-segmented" role="tablist" aria-label="View Mode">
-              <button
-                type="button"
-                class={`seg-btn ${viewMode() === "preview" ? "active" : ""}`}
-                onClick={() => setViewMode("preview")}
-              >
-                Preview
-              </button>
-              <button
-                type="button"
-                class={`seg-btn ${viewMode() === "split" ? "active" : ""}`}
-                onClick={() => setViewMode("split")}
-              >
-                Split
-              </button>
-              <button
-                type="button"
-                class={`seg-btn ${viewMode() === "source" ? "active" : ""}`}
-                onClick={() => setViewMode("source")}
-              >
-                Source
-              </button>
-            </div>
-
+        <div class="tb-tools">
+          <div class="cr-tabs" role="tablist" aria-label="View Mode">
             <button
               type="button"
-              class="pill-btn"
-              title="Toggle Dark / Light appearance"
-              onClick={() => applyThemeToDom(themeMode() === "dark" ? "light" : "dark")}
+              class={viewMode() === "preview" ? "on" : ""}
+              onClick={() => setViewMode("preview")}
             >
-              {themeMode() === "dark" ? "☾ Dark" : "☀ Light"}
+              Preview
             </button>
-
-            <Show
-              when={
-                doc()?.provider === "local-fs" &&
-                boot()?.providers.hindsight?.connected &&
-                !boot()?.providers.hindsight?.readonly
-              }
+            <button
+              type="button"
+              class={viewMode() === "split" ? "on" : ""}
+              onClick={() => setViewMode("split")}
             >
-              <button
-                type="button"
-                class="pill-btn primary"
-                title="Explicitly archive raw source to Hindsight (raw-first)"
-                onClick={() => void handleRetainToHindsight()}
-              >
-                Save Source → Hindsight
-              </button>
-            </Show>
+              Split
+            </button>
+            <button
+              type="button"
+              class={viewMode() === "source" ? "on" : ""}
+              onClick={() => setViewMode("source")}
+            >
+              Source
+            </button>
           </div>
-        </header>
 
+          <Show
+            when={
+              doc()?.provider === "local-fs" &&
+              boot()?.providers.hindsight?.connected &&
+              !boot()?.providers.hindsight?.readonly
+            }
+          >
+            <button
+              type="button"
+              class="dlg-button dlg-button-primary tb-save-btn"
+              title="Explicitly archive raw source to Hindsight (raw-first)"
+              onClick={() => void handleRetainToHindsight()}
+            >
+              <Ic.ArchiveUpIcon size={13} />
+              <span>Save to Hindsight</span>
+            </button>
+          </Show>
+
+          <button
+            type="button"
+            class="icon-btn"
+            aria-label="Toggle appearance"
+            title="Toggle Dark / Light appearance"
+            onClick={() => applyThemeToDom(themeMode() === "dark" ? "light" : "dark")}
+          >
+            {themeMode() === "dark" ? <Ic.MoonIcon size={15} /> : <Ic.SunIcon size={15} />}
+          </button>
+        </div>
+      </header>
+
+      <main class="main workspace-pane">
         <Show when={errorBanner()}>
           {(msg) => (
             <div class="error-strip" role="alert">
               <span>{msg()}</span>
-              <button type="button" onClick={() => setErrorBanner(null)}>
+              <button type="button" class="sb-mini-btn" onClick={() => setErrorBanner(null)}>
                 Dismiss
               </button>
             </div>
@@ -470,7 +513,11 @@ export function App() {
 
         <Show
           when={doc()}
-          fallback={<div class="empty-stage">Select or create a Markdown note (⌘N) or recall Hindsight (⌘K).</div>}
+          fallback={
+            <div class="empty-stage">
+              Select or create a Markdown note (<kbd>⌘N</kbd>) or recall Hindsight (<kbd>⌘K</kbd>).
+            </div>
+          }
         >
           {(d) => (
             <div class={`editor-stage mode-${viewMode()}`}>
@@ -478,8 +525,8 @@ export function App() {
               <Show when={viewMode() === "split" || viewMode() === "source"}>
                 <section class="source-pane" onClick={(e) => e.stopPropagation()}>
                   <div class="pane-subbar">
-                    <span>Raw Markdown + LaTeX</span>
-                    <span>{d().readonly ? "Read-only" : "UTF-8 · Atomic Save · Dead-key IME Safe"}</span>
+                    <span>Markdown + LaTeX</span>
+                    <span>{d().readonly ? "Read-only" : "UTF-8 · Atomic save"}</span>
                   </div>
                   <textarea
                     class="markdown-editor"
@@ -509,16 +556,17 @@ export function App() {
               <Show when={viewMode() === "preview" || viewMode() === "split"}>
                 <section class="reader-pane">
                   <div class="reader-column">
-                    {/* Provenance & Frontmatter Strip */}
+                    {/* Quiet Orb-style Provenance & Frontmatter Line */}
                     <div class="provenance-bar" data-testid="provenance-bar">
                       <span
                         class={`prov-badge ${
                           d().provenance.is_agent_summary ? "agent-summary" : "human-authored"
                         }`}
                       >
+                        <span class="prov-dot" />
                         {d().provenance.is_agent_summary
-                          ? "◇ Agent Summary · Knowledge Page"
-                          : `● Human · ${d().provenance.author || "thomas"}`}
+                          ? "Agent summary · Knowledge Page"
+                          : `Human · ${d().provenance.author || "thomas"}`}
                       </span>
 
                       <span class="prov-meta-pill">
@@ -536,13 +584,13 @@ export function App() {
                       <For each={frontmatterEntries()}>
                         {([k, v]) => (
                           <span class="fm-pill">
-                            <strong>{k}:</strong> {String(v)}
+                            <span class="fm-key">{k}:</span> {String(v)}
                           </span>
                         )}
                       </For>
                     </div>
 
-                    {/* Linked Hindsight Raw Sources / Related Pages strip when viewing Knowledge Page */}
+                    {/* Linked Hindsight Raw Sources / Related Pages strip */}
                     <Show
                       when={
                         d().provenance.related_sources.length > 0 ||
@@ -550,7 +598,7 @@ export function App() {
                       }
                     >
                       <div class="grounding-strip">
-                        <span class="grounding-label">Grounded Sources & Pages:</span>
+                        <span class="grounding-label">Grounded in</span>
                         <div class="grounding-chips">
                           <For each={d().provenance.related_sources.slice(0, 8)}>
                             {(srcId) => (
@@ -611,7 +659,7 @@ export function App() {
                     <Show when={(d().backlinks || []).length > 0}>
                       <footer class="backlinks-panel">
                         <div class="backlinks-head">
-                          Backlinks ({(d().backlinks || []).length})
+                          Backlinks · {(d().backlinks || []).length}
                         </div>
                         <div class="backlinks-grid">
                           <For each={d().backlinks || []}>
@@ -646,26 +694,44 @@ export function App() {
         onClose={() => setSearchOpen(false)}
       />
 
-      {/* Mount Local Folder Dialog */}
+      {/* Mount Local Folder Dialog (Orb Dialog contract) */}
       <Show when={mountModalOpen()}>
-        <div class="modal-scrim" onClick={() => setMountModalOpen(false)}>
-          <div class="mount-dialog" onClick={(e) => e.stopPropagation()}>
-            <h3>Mount Local Markdown Directory</h3>
-            <p>Index any local notes or research folder into SQLite FTS5 without moving your files.</p>
-            <input
-              type="text"
-              class="s-input mono"
-              placeholder="/home/thomas/Notes/Research"
-              value={mountPathInput()}
-              onInput={(e) => setMountPathInput(e.currentTarget.value)}
-            />
-            <div class="mount-actions">
-              <button type="button" class="pill-btn" onClick={() => setMountModalOpen(false)}>
+        <div class="dlg-back dlg-back-dim" onClick={() => setMountModalOpen(false)}>
+          <div class="dlg" onClick={(e) => e.stopPropagation()}>
+            <div class="dlg-head">
+              <h3>Mount local folder</h3>
+              <button
+                type="button"
+                class="dlg-close"
+                aria-label="Close"
+                onClick={() => setMountModalOpen(false)}
+              >
+                <Ic.CloseIcon />
+              </button>
+            </div>
+            <p class="dlg-description">
+              Index any local Markdown directory into SQLite FTS5 without moving your files.
+            </p>
+            <div class="dlg-body">
+              <input
+                type="text"
+                class="s-input mono"
+                placeholder="/home/thomas/Notes"
+                value={mountPathInput()}
+                onInput={(e) => setMountPathInput(e.currentTarget.value)}
+              />
+            </div>
+            <div class="dlg-foot">
+              <button
+                type="button"
+                class="dlg-button dlg-button-secondary"
+                onClick={() => setMountModalOpen(false)}
+              >
                 Cancel
               </button>
               <button
                 type="button"
-                class="pill-btn primary"
+                class="dlg-button dlg-button-primary"
                 onClick={() => {
                   const p = mountPathInput().trim();
                   if (!p) return;
@@ -680,7 +746,7 @@ export function App() {
                     );
                 }}
               >
-                Mount Folder
+                Mount folder
               </button>
             </div>
           </div>

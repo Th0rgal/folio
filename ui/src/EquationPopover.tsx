@@ -1,4 +1,5 @@
 import { For, Show, createEffect, createSignal } from "solid-js";
+import * as Ic from "./icons";
 import { renderKatexSafe } from "./katexRender";
 import type { MathSpan } from "./types";
 
@@ -51,28 +52,32 @@ export function EquationPopover(props: {
         <div class="eq-popover-actions">
           <button
             type="button"
-            class="pill-btn"
+            class="dlg-button dlg-button-secondary eq-btn"
             onClick={() => setShowMacros((v) => !v)}
           >
             Macros ({Object.keys(props.macros).length})
           </button>
-          <button type="button" class="pill-btn" onClick={handleCopyLatex}>
-            {copied() ? "Copied TeX" : "Copy LaTeX"}
+          <button
+            type="button"
+            class="dlg-button dlg-button-secondary eq-btn"
+            onClick={handleCopyLatex}
+          >
+            {copied() ? "Copied" : "Copy TeX"}
           </button>
           <button
             type="button"
-            class="icon-close-btn"
+            class="dlg-close"
             aria-label="Close equation inspector"
             onClick={props.onClose}
           >
-            ✕
+            <Ic.CloseIcon />
           </button>
         </div>
       </div>
 
       <div class="eq-editor-grid">
         <div class="eq-source-col">
-          <label class="eq-label">TeX Source</label>
+          <label class="eq-label">TeX source</label>
           <textarea
             ref={textareaRef}
             class="eq-textarea"
@@ -95,7 +100,7 @@ export function EquationPopover(props: {
         </div>
 
         <div class="eq-preview-col">
-          <label class="eq-label">Live KaTeX Preview (Offline Fonts)</label>
+          <label class="eq-label">Live KaTeX preview</label>
           <div
             class={`eq-live-preview ${preview().error ? "has-error" : ""}`}
             data-testid="equation-live-preview"
@@ -148,7 +153,7 @@ export function EquationPopover(props: {
             />
             <button
               type="button"
-              class="pill-btn primary"
+              class="dlg-button dlg-button-primary"
               onClick={() => {
                 const k = newMacroKey().trim();
                 const v = newMacroVal().trim();
@@ -156,7 +161,7 @@ export function EquationPopover(props: {
                 props.onSaveMacros({ ...props.macros, [k]: v });
               }}
             >
-              Save Macro
+              Save macro
             </button>
           </div>
         </div>
@@ -171,12 +176,12 @@ export function EquationPopover(props: {
         <Show when={!props.readonly}>
           <button
             type="button"
-            class="pill-btn primary"
+            class="dlg-button dlg-button-primary"
             data-testid="equation-apply-btn"
             disabled={Boolean(preview().error)}
             onClick={() => props.onApply(props.span, draftTex())}
           >
-            Apply to Markdown
+            Apply
           </button>
         </Show>
       </div>
