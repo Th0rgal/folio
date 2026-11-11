@@ -52,6 +52,13 @@ export const FolderIcon = (p: IconProps) => (
   </I>
 );
 
+export const FolderOpenIcon = (p: IconProps) => (
+  <I {...p}>
+    <path d="M2.2 11.6V4.4a1.2 1.2 0 0 1 1.2-1.2h2.6l1.3 1.5h4.5a1.2 1.2 0 0 1 1.2 1.2v1.2" />
+    <path d="M2.2 11.6 3.7 7.1h10.1l-1.5 4.5a1.1 1.1 0 0 1-1 .7H3.1a.9.9 0 0 1-.9-.7z" />
+  </I>
+);
+
 export const DocIcon = (p: IconProps) => (
   <I {...p}>
     <path d="M4.4 2.4h4.9L12.6 5.7v6.5a1.4 1.4 0 0 1-1.4 1.4H4.4A1.4 1.4 0 0 1 3 12.2V3.8a1.4 1.4 0 0 1 1.4-1.4z" />
@@ -192,5 +199,85 @@ export const WorkspaceIcon = (p: IconProps) => (
     <rect x="2.7" y="3" width="10.6" height="10" rx="2" />
     <path d="M2.7 6.3h10.6" />
     <path d="M6.1 6.3V13" />
+  </I>
+);
+
+export const SparklesIcon = (p: IconProps) => (
+  <I {...p}>
+    <path d="M8 2.1 9.2 6l3.9 1.2-3.9 1.2L8 12.3 6.8 8.4 2.9 7.2 6.8 6z" />
+    <path d="M12.7 11.1l.4 1.3 1.3.4-1.3.4-.4 1.3-.4-1.3-1.3-.4 1.3-.4z" />
+  </I>
+);
+
+export const CalendarIcon = (p: IconProps) => (
+  <I {...p}>
+    <rect x="2.4" y="3.4" width="11.2" height="10.2" rx="1.8" />
+    <path d="M5.2 2.1v2.4M10.8 2.1v2.4M2.4 6.6h11.2" />
+  </I>
+);
+
+export const SyncCloudIcon = (p: IconProps) => (
+  <I size={14} {...p}>
+    <path d="M4.5 11.8h7.1a2.6 2.6 0 0 0 .3-5.18A3.8 3.8 0 0 0 4.6 5.4a3 3 0 0 0-.1 6.4z" />
+    <path d="M8 10.2V6.8M6.4 8.3 8 6.7l1.6 1.6" />
+  </I>
+);
+
+export const EditPenIcon = (p: IconProps) => (
+  <I size={13.5} {...p}>
+    <path d="M10.8 2.6a1.4 1.4 0 0 1 2 2L5.6 11.8l-2.8.7.7-2.8z" />
+  </I>
+);
+
+export const TrashIcon = (p: IconProps) => (
+  <I size={13.5} {...p}>
+    <path d="M3.2 4.4h9.6M6.2 4.4V3.1a.9.9 0 0 1 .9-.9h1.8a.9.9 0 0 1 .9.9v1.3" />
+    <path d="M4.4 4.4l.6 8.3a1.2 1.2 0 0 0 1.2 1.1h3.6a1.2 1.2 0 0 0 1.2-1.1l.6-8.3" />
+  </I>
+);
+
+export const ForkIcon = (p: IconProps) => (
+  <I size={13.5} {...p}>
+    <circle cx="5" cy="3.6" r="1.4" />
+    <circle cx="11" cy="4.6" r="1.4" />
+    <circle cx="8" cy="12.4" r="1.4" />
+    <path d="M5 5v1.6a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2V6M8 8.6V11" />
+  </I>
+);
+
+export const CommandIcon = (p: IconProps) => (
+  <I size={14} {...p}>
+    <path d="M6 6V4.3a1.7 1.7 0 1 0-1.7 1.7H6zm0 0h4m-4 0v4m4-4V4.3A1.7 1.7 0 1 1 11.7 6H10zm0 0v4m0 0h1.7a1.7 1.7 0 1 1-1.7 1.7V10zm0 0H6m0 0v1.7A1.7 1.7 0 1 1 4.3 10H6z" />
+  </I>
+);
+
+export const LockIcon = (p: IconProps) => (
+  <I size={13} {...p}>
+    <rect x="3.4" y="7.2" width="9.2" height="6.3" rx="1.5" />
+    <path d="M5.4 7.2V5.3a2.6 2.6 0 0 1 5.2 0v1.9" />
+  </I>
+);
+
+export const BoltIcon = (p: IconProps) => (
+  <I size={13} {...p}>
+    <path d="M8.8 2.1 4.1 8.6h3.5l-.8 5.3 5.1-6.7H8.3z" />
+  </I>
+);
+
+export const SendIcon = (p: IconProps) => (
+  <I size={13.5} sw={1.35} {...p}>
+    <path d="M8 12.6V3.6M4.3 7.2 8 3.5l3.7 3.7" />
+  </I>
+);
+
+export const StopIcon = (p: IconProps) => (
+  <I size={12.5} {...p}>
+    <rect x="4.2" y="4.2" width="7.6" height="7.6" rx="1.4" fill="currentColor" stroke="none" />
+  </I>
+);
+
+export const MaximizeIcon = (p: IconProps) => (
+  <I size={13} {...p}>
+    <path d="M9.8 2.8h3.4v3.4M6.2 13.2H2.8V9.8M13.2 2.8 9.2 6.8M2.8 13.2l4-4" />
   </I>
 );

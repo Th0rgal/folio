@@ -1,6 +1,7 @@
 interface Bridge {
   core?: {
     invoke: <T = unknown>(command: string, args?: Record<string, unknown>) => Promise<T>;
+    assetUrl?: (uri: string, rel: string) => string;
   };
   event?: {
     listen: (
@@ -41,6 +42,27 @@ export async function rpcInvoke<T = unknown>(
     throw new Error(body.error || `RPC failed: ${command}`);
   }
   return body.result as T;
+}
+
+export function resolveLocalAssetUrl(noteUri: string | null | undefined, rawSrc: string): string {
+  const trimmed = rawSrc.trim();
+  if (
+    !trimmed ||
+    trimmed.startsWith("http://") ||
+    trimmed.startsWith("https://") ||
+    trimmed.startsWith("data:") ||
+    trimmed.startsWith("blob:")
+  ) {
+    return trimmed;
+  }
+  if (noteUri && noteUri.startsWith("local://")) {
+    const bridge = getBridge();
+    if (bridge?.core?.assetUrl) {
+      return bridge.core.assetUrl(noteUri, trimmed);
+    }
+    return `/__folio_asset?uri=${encodeURIComponent(noteUri)}&rel=${encodeURIComponent(trimmed)}`;
+  }
+  return trimmed;
 }
 
 export async function listenDesktopEvent(
@@ -101,6 +123,8 @@ export async function listenDesktopEvent(
 
 export function detectPlatform(): "linux" | "macos" | "web" {
   if (typeof navigator === "undefined") return "linux";
+  const ds = typeof document !== "undefined" ? document.documentElement?.dataset?.platform : "";
+  if (ds === "linux" || ds === "macos") return ds;
   const ua = navigator.userAgent.toLowerCase();
   if (ua.includes("mac os") || ua.includes("macintosh")) return "macos";
   if (ua.includes("linux") || ua.includes("wayland")) return "linux";

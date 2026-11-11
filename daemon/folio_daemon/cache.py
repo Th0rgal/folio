@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS documents (
     external_id TEXT NOT NULL,
     scope TEXT NOT NULL DEFAULT '',
     title TEXT NOT NULL,
+    title_slug TEXT NOT NULL DEFAULT '',
+    ext_slug TEXT NOT NULL DEFAULT '',
     folder_path TEXT NOT NULL DEFAULT '',
     body TEXT NOT NULL,
     raw_markdown TEXT NOT NULL,
@@ -54,6 +56,19 @@ CREATE TABLE IF NOT EXISTS kv_state (
     value_json TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS hindsight_sync (
+    uri TEXT PRIMARY KEY,
+    target_bank TEXT NOT NULL DEFAULT 'folio',
+    document_id TEXT NOT NULL,
+    source_id TEXT,
+    synced_hash TEXT NOT NULL DEFAULT '',
+    synced_at TEXT NOT NULL DEFAULT '',
+    auto_sync INTEGER NOT NULL DEFAULT 1,
+    last_error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_hs_sync_bank ON hindsight_sync(target_bank);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
     uri UNINDEXED,
     provider UNINDEXED,
@@ -83,7 +98,30 @@ class CacheStore:
         self._conn.row_factory = sqlite3.Row
         with self._lock:
             self._conn.executescript(SCHEMA_SQL)
+            self._migrate_locked()
             self._conn.commit()
+
+    def _migrate_locked(self) -> None:
+        cols = {
+            r["name"]
+            for r in self._conn.execute("PRAGMA table_info(documents)").fetchall()
+        }
+        added_slug_cols = False
+        if "title_slug" not in cols:
+            self._conn.execute("ALTER TABLE documents ADD COLUMN title_slug TEXT NOT NULL DEFAULT ''")
+            added_slug_cols = True
+        if "ext_slug" not in cols:
+            self._conn.execute("ALTER TABLE documents ADD COLUMN ext_slug TEXT NOT NULL DEFAULT ''")
+            added_slug_cols = True
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_docs_title_slug ON documents(title_slug)")
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_docs_ext_slug ON documents(ext_slug)")
+        if added_slug_cols:
+            rows = self._conn.execute("SELECT uri, title, external_id FROM documents").fetchall()
+            for r in rows:
+                self._conn.execute(
+                    "UPDATE documents SET title_slug = ?, ext_slug = ? WHERE uri = ?",
+                    (normalize_link_slug(r["title"]), normalize_link_slug(r["external_id"]), r["uri"]),
+                )
 
     def close(self) -> None:
         with self._lock:
@@ -138,25 +176,34 @@ class CacheStore:
             self._conn.commit()
 
     def upsert_document(self, doc: DocumentRecord, scope: str = "") -> bool:
+        t_slug = normalize_link_slug(doc.title)
+        e_slug = normalize_link_slug(doc.external_id)
         with self._lock:
             existing = self._conn.execute(
-                "SELECT content_hash FROM documents WHERE uri = ?", (doc.uri,)
+                "SELECT content_hash, title_slug FROM documents WHERE uri = ?", (doc.uri,)
             ).fetchone()
-            if existing and doc.content_hash and existing["content_hash"] == doc.content_hash:
+            if (
+                existing
+                and doc.content_hash
+                and existing["content_hash"] == doc.content_hash
+                and existing["title_slug"] == t_slug
+            ):
                 return False
 
             self._conn.execute(
                 """
                 INSERT INTO documents(
-                    uri, provider, external_id, scope, title, folder_path, body, raw_markdown,
-                    frontmatter_json, tags_json, wikilinks_json, provenance_json, readonly,
-                    content_hash, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    uri, provider, external_id, scope, title, title_slug, ext_slug, folder_path,
+                    body, raw_markdown, frontmatter_json, tags_json, wikilinks_json, provenance_json,
+                    readonly, content_hash, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(uri) DO UPDATE SET
                     provider = excluded.provider,
                     external_id = excluded.external_id,
                     scope = excluded.scope,
                     title = excluded.title,
+                    title_slug = excluded.title_slug,
+                    ext_slug = excluded.ext_slug,
                     folder_path = excluded.folder_path,
                     body = excluded.body,
                     raw_markdown = excluded.raw_markdown,
@@ -174,6 +221,8 @@ class CacheStore:
                     doc.external_id,
                     scope,
                     doc.title,
+                    t_slug,
+                    e_slug,
                     doc.folder_path,
                     doc.body,
                     doc.raw_markdown,
@@ -225,23 +274,144 @@ class CacheStore:
             return self._row_to_doc(row) if row else None
 
     def find_by_slug_or_id(self, target: str) -> Optional[DocumentRecord]:
-        slug = normalize_link_slug(target)
+        cleaned = target.strip()
+        slug = normalize_link_slug(cleaned)
         with self._lock:
             row = self._conn.execute(
                 "SELECT * FROM documents WHERE external_id = ? OR uri = ? LIMIT 1",
-                (target.strip(), target.strip()),
+                (cleaned, cleaned),
             ).fetchone()
             if row:
                 return self._row_to_doc(row)
-            rows = self._conn.execute(
-                "SELECT * FROM documents ORDER BY CASE provider WHEN 'local-fs' THEN 0 WHEN 'hindsight' THEN 1 ELSE 2 END, updated_at DESC"
-            ).fetchall()
-            for candidate in rows:
-                cand_title_slug = normalize_link_slug(candidate["title"])
-                cand_id_slug = normalize_link_slug(candidate["external_id"])
-                if slug in (cand_title_slug, cand_id_slug):
-                    return self._row_to_doc(candidate)
-        return None
+            if not slug:
+                return None
+            row = self._conn.execute(
+                """
+                SELECT * FROM documents
+                WHERE title_slug = ? OR ext_slug = ?
+                ORDER BY CASE provider WHEN 'local-fs' THEN 0 WHEN 'hindsight' THEN 1 ELSE 2 END,
+                         updated_at DESC
+                LIMIT 1
+                """,
+                (slug, slug),
+            ).fetchone()
+            return self._row_to_doc(row) if row else None
+
+    def get_sync_state(self, uri: str) -> Optional[dict[str, Any]]:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM hindsight_sync WHERE uri = ?", (uri,)).fetchone()
+            if not row:
+                return None
+            d = dict(row)
+            d["auto_sync"] = bool(d.get("auto_sync", 1))
+            return d
+
+    def list_sync_states(self) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM hindsight_sync").fetchall()
+            out: dict[str, dict[str, Any]] = {}
+            for r in rows:
+                d = dict(r)
+                d["auto_sync"] = bool(d.get("auto_sync", 1))
+                out[d["uri"]] = d
+            return out
+
+    def upsert_sync_state(
+        self,
+        *,
+        uri: str,
+        target_bank: str,
+        document_id: str,
+        synced_hash: str,
+        synced_at: str,
+        source_id: Optional[str] = None,
+        auto_sync: bool = True,
+        last_error: Optional[str] = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO hindsight_sync(
+                    uri, target_bank, document_id, source_id, synced_hash, synced_at, auto_sync, last_error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(uri) DO UPDATE SET
+                    target_bank = excluded.target_bank,
+                    document_id = excluded.document_id,
+                    source_id = COALESCE(excluded.source_id, hindsight_sync.source_id),
+                    synced_hash = excluded.synced_hash,
+                    synced_at = excluded.synced_at,
+                    auto_sync = excluded.auto_sync,
+                    last_error = excluded.last_error
+                """,
+                (
+                    uri,
+                    target_bank,
+                    document_id,
+                    source_id,
+                    synced_hash,
+                    synced_at,
+                    1 if auto_sync else 0,
+                    last_error,
+                ),
+            )
+            self._conn.commit()
+        return self.get_sync_state(uri) or {}
+
+    def move_sync_uri(self, old_uri: str, new_uri: str) -> None:
+        if old_uri == new_uri:
+            return
+        with self._lock:
+            self._conn.execute("DELETE FROM hindsight_sync WHERE uri = ?", (new_uri,))
+            self._conn.execute("UPDATE hindsight_sync SET uri = ? WHERE uri = ?", (new_uri, old_uri))
+            self._conn.commit()
+
+    def delete_sync_state(self, uri: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM hindsight_sync WHERE uri = ?", (uri,))
+            self._conn.commit()
+
+    def list_link_candidates(self, query: str = "", limit: int = 24) -> list[dict[str, Any]]:
+        q = query.strip().lower()
+        with self._lock:
+            if q:
+                like_q = f"%{q}%"
+                rows = self._conn.execute(
+                    """
+                    SELECT uri, provider, external_id, title, folder_path, provenance_json
+                    FROM documents
+                    WHERE lower(title) LIKE ? OR lower(external_id) LIKE ? OR lower(folder_path) LIKE ?
+                    ORDER BY CASE provider WHEN 'local-fs' THEN 0 WHEN 'hindsight' THEN 1 ELSE 2 END,
+                             CASE WHEN lower(title) LIKE ? THEN 0 ELSE 1 END,
+                             updated_at DESC
+                    LIMIT ?
+                    """,
+                    (like_q, like_q, like_q, f"{q}%", limit),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """
+                    SELECT uri, provider, external_id, title, folder_path, provenance_json
+                    FROM documents
+                    ORDER BY CASE provider WHEN 'local-fs' THEN 0 WHEN 'hindsight' THEN 1 ELSE 2 END,
+                             updated_at DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+            out: list[dict[str, Any]] = []
+            for r in rows:
+                prov = json.loads(r["provenance_json"] or "{}")
+                out.append(
+                    {
+                        "uri": r["uri"],
+                        "provider": r["provider"],
+                        "external_id": r["external_id"],
+                        "title": r["title"],
+                        "folder_path": r["folder_path"],
+                        "is_agent_summary": bool(prov.get("is_agent_summary", False)),
+                    }
+                )
+            return out
 
     def get_backlinks(self, doc: DocumentRecord) -> list[dict[str, Any]]:
         slugs = {
@@ -305,7 +475,7 @@ class CacheStore:
         scope: Optional[str] = None,
         limit: int = 25,
     ) -> list[dict[str, Any]]:
-        tokens = [re.sub(r'[^\w-]', "", tok) for tok in query.strip().split()]
+        tokens = [re.sub(r"[^\w-]", "", tok) for tok in query.strip().split()]
         tokens = [t for t in tokens if t]
         if not tokens:
             return self._recent_items(provider=provider, scope=scope, limit=limit)

@@ -3,6 +3,10 @@ import {
   type KeyEventLike,
   hasPrimaryModifier,
   historyNavDelta,
+  isCloseSurfaceShortcut,
+  isCommandPaletteShortcut,
+  isCopilotShortcut,
+  isDailyNoteShortcut,
   isFindShortcut,
   isFocusModeShortcut,
   isNewNoteShortcut,
@@ -10,6 +14,7 @@ import {
   isSaveShortcut,
   isSearchShortcut,
   isSidebarShortcut,
+  isSyncNoteShortcut,
   isToggleSourceShortcut,
   isToggleSplitShortcut,
   sidebarSectionShortcut,
@@ -35,6 +40,14 @@ describe("Orb-matched keyboard shortcuts", () => {
     expect(isSearchShortcut(ev({ key: "F", code: "KeyF", ctrlKey: true, shiftKey: true }), false)).toBe(true);
     expect(isSearchShortcut(ev({ key: "k", code: "KeyK", metaKey: true }), false)).toBe(false);
     expect(isSearchShortcut(ev({ key: "f", code: "KeyF", metaKey: true, shiftKey: false }), false)).toBe(false);
+  });
+
+  it("binds Cmd+K to Command Palette, Cmd+J to Knowledge Copilot, Cmd+Shift+D to Daily Note, and Cmd+Shift+S to Sync", () => {
+    expect(isCommandPaletteShortcut(ev({ key: "k", code: "KeyK", metaKey: true }), false)).toBe(true);
+    expect(isCopilotShortcut(ev({ key: "j", code: "KeyJ", metaKey: true }), false)).toBe(true);
+    expect(isDailyNoteShortcut(ev({ key: "D", code: "KeyD", metaKey: true, shiftKey: true }), false)).toBe(true);
+    expect(isSyncNoteShortcut(ev({ key: "S", code: "KeyS", metaKey: true, shiftKey: true }), false)).toBe(true);
+    expect(isCloseSurfaceShortcut(ev({ key: "w", code: "KeyW", metaKey: true }), false)).toBe(true);
   });
 
   it("rejects Hyprland WM Ctrl+Cmd chords (metaKey && ctrlKey)", () => {

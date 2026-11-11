@@ -39,6 +39,12 @@ in
         description = "Default Hindsight memory bank ID.";
       };
 
+      syncBank = lib.mkOption {
+        type = lib.types.str;
+        default = "folio";
+        description = "Dedicated Hindsight bank ID used for syncing local Folio Markdown notes (`FOLIO_SYNC_BANK`).";
+      };
+
       readOnly = lib.mkOption {
         type = lib.types.bool;
         default = false;
@@ -94,6 +100,7 @@ in
           {
             HINDSIGHT_API_URL = cfg.hindsight.apiUrl;
             HINDSIGHT_BANK_ID = cfg.hindsight.defaultBank;
+            FOLIO_SYNC_BANK = cfg.hindsight.syncBank;
           }
           // lib.optionalAttrs cfg.hindsight.readOnly {
             FOLIO_HINDSIGHT_READONLY = "1";
