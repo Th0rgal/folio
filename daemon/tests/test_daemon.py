@@ -405,5 +405,277 @@ class HttpServerAndSseTest(unittest.TestCase):
             self.assertIsNone(CredentialResolver._resolve_binary("definitely-nonexistent-folio-bin-xyz"))
 
 
+class DedicatedBankSyncAndCopilotTest(unittest.TestCase):
+    def test_dedicated_folio_bank_sync_lifecycle_and_private_guard(self) -> None:
+        mcp_calls: list[tuple[str, str, dict]] = []
+
+        class SyncHandler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, fmt: str, *args: object) -> None:
+                return
+
+            def do_GET(self) -> None:
+                if self.path == "/v1/default/banks":
+                    self._json({"banks": [{"bank_id": "thomas", "name": "Thomas"}]})
+                else:
+                    self._json({"items": [], "roots": []})
+
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length") or "0")
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+                parts = [p for p in self.path.split("/") if p]
+                bank_id = parts[1] if len(parts) >= 2 and parts[0] == "mcp" else "unknown"
+                params = body.get("params") or {}
+                tool_name = str(params.get("name") or "")
+                tool_args = params.get("arguments") or {}
+                mcp_calls.append((bank_id, tool_name, tool_args))
+                if tool_name == "save_source":
+                    # Verify Spark-Memory MCP contract: no unsupported bank_id argument
+                    assert "bank_id" not in tool_args
+                    self._json(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "result": {
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": json.dumps(
+                                            {
+                                                "status": "saved",
+                                                "source_id": "src-promoted999",
+                                                "document_id": tool_args.get("document_id") or "doc-1",
+                                            }
+                                        ),
+                                    }
+                                ]
+                            },
+                        }
+                    )
+                else:
+                    self._json(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "result": {
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": json.dumps({"status": "retained", "bank": bank_id}),
+                                    }
+                                ]
+                            },
+                        }
+                    )
+
+            def _json(self, obj: dict) -> None:
+                raw = json.dumps(obj).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), SyncHandler)
+        port = srv.server_address[1]
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp_path = Path(tmp)
+                env_patch = {
+                    "FOLIO_HINDSIGHT_URL": f"http://127.0.0.1:{port}",
+                    "FOLIO_HINDSIGHT_READONLY": "0",
+                    "FOLIO_SYNC_BANK": "folio",
+                    "HINDSIGHT_API_KEY": "test-hs-sync-token",
+                    "SPARK_MEMORY_API_TOKEN": "test-sm-sync-token",
+                }
+                with mock.patch.dict(os.environ, env_patch, clear=False):
+                    engine = FolioEngine(tmp_path / "state", tmp_path / "notes")
+                    try:
+                        boot = engine.dispatch("get_bootstrap", {})
+                        bank_ids = [b["bank_id"] for b in boot["banks"]]
+                        self.assertIn("folio", bank_ids)
+                        self.assertEqual(boot["sync_bank"], "folio")
+
+                        # Create a working note and sync to dedicated `folio` bank
+                        note = engine.dispatch(
+                            "create_local_document",
+                            {"title": "Spectral Gap Lemma", "folder": "Research", "tags": ["math"]},
+                        )
+                        sync_res = engine.dispatch("hindsight_sync_note", {"uri": note["uri"]})
+                        self.assertEqual(sync_res["bank_id"], "folio")
+                        self.assertEqual(sync_res["document"]["sync"]["state"], "synced")
+                        self.assertTrue(any(b == "folio" and fn == "sync_retain" for b, fn, _ in mcp_calls))
+
+                        # Rename note and verify sync ledger moves cleanly (title changes -> modified)
+                        renamed = engine.dispatch(
+                            "rename_local_document",
+                            {"uri": note["uri"], "new_title": "Sharp Spectral Gap Lemma"},
+                        )
+                        new_uri = renamed["document"]["uri"]
+                        self.assertNotEqual(new_uri, note["uri"])
+                        self.assertEqual(renamed["document"]["sync"]["state"], "modified")
+
+                        # Promote stabilized note explicitly to `thomas` raw-first archive
+                        promoted = engine.dispatch(
+                            "hindsight_sync_note",
+                            {"uri": new_uri, "promote_raw_source": True},
+                        )
+                        self.assertEqual(promoted["status"], "promoted")
+                        self.assertEqual(promoted["sync"]["source_id"], "src-promoted999")
+
+                        # Private note must never sync remotely
+                        priv = engine.dispatch(
+                            "create_local_document",
+                            {"title": "Private Scratch", "tags": ["private"]},
+                        )
+                        self.assertEqual(priv["sync"]["state"], "private")
+                        with self.assertRaises(PermissionError):
+                            engine.dispatch("hindsight_sync_note", {"uri": priv["uri"]})
+
+                        # Daily note + local asset confinement
+                        daily = engine.dispatch("open_daily_note", {"date": "2026-11-11"})
+                        self.assertTrue(daily["document"]["uri"].endswith("Journal/2026-11-11.md"))
+                        candidates = engine.dispatch("list_link_candidates", {"query": "Spectral"})
+                        self.assertGreaterEqual(len(candidates["items"]), 1)
+                    finally:
+                        engine.shutdown()
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+    def test_orb_knowledge_copilot_profiles_privacy_clamp_and_edit_proposal(self) -> None:
+        seen_models: list[str] = []
+
+        class OrbRouterMock(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, fmt: str, *args: object) -> None:
+                return
+
+            def do_GET(self) -> None:
+                if self.path == "/v1/models":
+                    body = json.dumps(
+                        {
+                            "data": [
+                                {"id": "builtin/fast"},
+                                {"id": "builtin/smart"},
+                                {"id": "private"},
+                                {"id": "obliterated"},
+                            ]
+                        }
+                    ).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length") or "0")
+                req = json.loads(self.rfile.read(length).decode("utf-8"))
+                seen_models.append(str(req.get("model")))
+                msgs = req.get("messages") or []
+                has_tool_result = any(m.get("role") == "tool" for m in msgs)
+
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+
+                if not has_tool_result:
+                    args_str = json.dumps(
+                        {
+                            "summary": "Add corollary under heading",
+                            "edits": [
+                                {
+                                    "old_text": "# Secret Theorem",
+                                    "new_text": "# Secret Theorem\n\nCorollary: $\\lambda_1 > 0$.",
+                                }
+                            ],
+                        }
+                    )
+                    frame = {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": 0,
+                                            "id": "call_edit_1",
+                                            "function": {"name": "propose_note_edit", "arguments": args_str},
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                    self.wfile.write(f"data: {json.dumps(frame)}\n\n".encode("utf-8"))
+                    self.wfile.write(b"data: [DONE]\n\n")
+                else:
+                    for tok in ("Staged ", "corollary ", "cleanly."):
+                        frame = {"choices": [{"delta": {"content": tok}}]}
+                        self.wfile.write(f"data: {json.dumps(frame)}\n\n".encode("utf-8"))
+                    self.wfile.write(b"data: [DONE]\n\n")
+                self.wfile.flush()
+
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), OrbRouterMock)
+        port = srv.server_address[1]
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                tmp_path = Path(tmp)
+                env_patch = {
+                    "FOLIO_ORBROUTER_URL": f"http://127.0.0.1:{port}/v1",
+                    "FOLIO_ORBROUTER_API_KEY": "test-orbrouter-key-not-real",
+                }
+                with mock.patch.dict(os.environ, env_patch, clear=False):
+                    engine = FolioEngine(tmp_path / "state", tmp_path / "notes")
+                    try:
+                        status = engine.dispatch("copilot_status", {"discover": True})
+                        resolved_map = {p["id"]: p["resolved_model"] for p in status["profiles"]}
+                        self.assertEqual(resolved_map["builtin/fast"], "builtin/fast")
+                        self.assertEqual(resolved_map["builtin/smart"], "builtin/smart")
+                        self.assertEqual(resolved_map["builtin/private"], "private")
+                        self.assertEqual(resolved_map["builtin/obliterated"], "obliterated")
+
+                        # Create a #private note and query with builtin/smart -> must auto-clamp to `private`
+                        priv_note = engine.dispatch(
+                            "create_local_document",
+                            {
+                                "title": "Secret Theorem",
+                                "initial_body": "# Secret Theorem\n\nProof sketch.\n",
+                                "tags": ["private"],
+                            },
+                        )
+                        done = engine.dispatch(
+                            "copilot_query",
+                            {
+                                "prompt": "Add the spectral corollary",
+                                "profile": "builtin/smart",
+                                "active_uri": priv_note["uri"],
+                                "blocking": True,
+                            },
+                        )
+                        self.assertTrue(done["privacy_clamped"])
+                        self.assertEqual(done["profile"], "builtin/private")
+                        self.assertEqual(done["resolved_model"], "private")
+                        self.assertTrue(all(m == "private" for m in seen_models))
+                        self.assertEqual(done["answer"], "Staged corollary cleanly.")
+                        self.assertEqual(len(done["proposals"]), 1)
+
+                        prop_id = done["proposals"][0]["proposal_id"]
+                        applied = engine.dispatch("copilot_apply_proposal", {"proposal_id": prop_id})
+                        self.assertTrue(applied["proposal"]["applied"])
+                        self.assertIn("Corollary: $\\lambda_1 > 0$.", applied["document"]["body"])
+                    finally:
+                        engine.shutdown()
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+
 if __name__ == "__main__":
     unittest.main()

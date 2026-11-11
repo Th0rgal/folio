@@ -9,12 +9,14 @@
   fetchPnpmDeps,
   python3,
   pkg-config,
-  gtk3,
-  webkitgtk_4_1 ? null,
-  wrapGAppsHook3 ? null,
+  gtk4,
+  webkitgtk_6_0 ? null,
+  wrapGAppsHook4 ? null,
   makeWrapper,
   librsvg,
   libsecret ? null,
+  dbus ? null,
+  glib ? null,
   xdg-utils ? null,
   cacert,
   apple-sdk_15 ? null,
@@ -101,6 +103,9 @@ let
         --prefix PATH : "${
           lib.makeBinPath (
             lib.optionals (libsecret != null) [ libsecret ]
+            ++ lib.optionals (dbus != null) [ dbus ]
+            ++ lib.optionals (glib != null) [ glib ]
+            ++ lib.optionals (xdg-utils != null) [ xdg-utils ]
           )
         }" \
         --set-default SSL_CERT_FILE "${cacert}/etc/ssl/certs/ca-bundle.crt" \
@@ -117,14 +122,14 @@ if stdenv.hostPlatform.isLinux then
 
     nativeBuildInputs = [
       pkg-config
-      wrapGAppsHook3
+      wrapGAppsHook4
       makeWrapper
       librsvg
     ];
 
     buildInputs = [
-      gtk3
-      webkitgtk_4_1
+      gtk4
+      webkitgtk_6_0
     ];
 
     dontWrapGApps = true;
@@ -132,6 +137,7 @@ if stdenv.hostPlatform.isLinux then
     buildPhase = ''
       runHook preBuild
       make CC=clang HAS_WEBKIT=1 folio
+      ./folio --self-test
       runHook postBuild
     '';
 
@@ -184,14 +190,6 @@ if stdenv.hostPlatform.isLinux then
             export GBM_BACKENDS_PATH="/run/opengl-driver/lib/gbm''${GBM_BACKENDS_PATH:+:$GBM_BACKENDS_PATH}"
             [ -d /run/opengl-driver/share/glvnd/egl_vendor.d ] && export __EGL_VENDOR_LIBRARY_DIRS="/run/opengl-driver/share/glvnd/egl_vendor.d''${__EGL_VENDOR_LIBRARY_DIRS:+:$__EGL_VENDOR_LIBRARY_DIRS}"
           fi
-          case " $* " in
-            *" --self-test "*) ;;
-            *)
-              if [ -z "''${FOLIO_LOCALD_PORT:-}" ]; then
-                export FOLIO_LOCALD_PORT=$(${python3}/bin/python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
-              fi
-              ;;
-          esac
         ''}
       runHook postInstall
     '';

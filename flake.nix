@@ -1,5 +1,5 @@
 {
-  description = "Folio — Local-first Markdown, offline KaTeX, and Hindsight desktop client (GTK3/WebKitGTK on Wayland + AppKit/WKWebView on macOS)";
+  description = "Folio — Local-first Markdown, offline KaTeX, and Hindsight desktop client (GTK4/WebKitGTK 6.0 on Wayland + AppKit/WKWebView on macOS)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -80,8 +80,8 @@
                 pkgs.pkg-config
               ]
               ++ nixpkgs.lib.optionals isLinux [
-                pkgs.gtk3
-                pkgs.webkitgtk_4_1
+                pkgs.gtk4
+                pkgs.webkitgtk_6_0
                 pkgs.librsvg
                 pkgs.libsecret
                 pkgs.xdg-utils

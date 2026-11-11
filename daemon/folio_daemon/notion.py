@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from .cache import CacheStore
+from .http_pool import SHARED_HTTP_POOL
 from .markdown_utils import extract_tags, extract_wikilinks, sha256_text
 from .models import DocumentRecord, ProvenanceInfo, TreeNode
 from .secrets import CredentialResolver
@@ -66,15 +67,16 @@ class NotionProvider:
             "Authorization": f"Bearer {tok}",
             "Notion-Version": NOTION_VERSION,
             "Accept": "application/json",
-            "User-Agent": "folio-desktop/0.1.0",
+            "User-Agent": "folio-desktop/0.2.0",
         }
-        data = None
-        if payload is not None:
-            headers["Content-Type"] = "application/json"
-            data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(f"{self.api_base}{path}", data=data, headers=headers, method=method)
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8", errors="replace"))
+        res = SHARED_HTTP_POOL.request_json(
+            f"{self.api_base}{path}",
+            method=method,
+            headers=headers,
+            payload=payload,
+            timeout=timeout,
+        )
+        return res if isinstance(res, dict) else {}
 
     def _resolve_workspace_name(self, slot: str, token: str, fallback: str) -> str:
         kv_key = f"notion:ws_name:{slot}"

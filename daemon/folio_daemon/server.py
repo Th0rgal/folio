@@ -1,9 +1,11 @@
+import concurrent.futures
 import hmac
 import json
 import os
 import queue
 import shutil
 import signal
+import subprocess
 import sys
 import threading
 import urllib.parse
@@ -12,9 +14,12 @@ from pathlib import Path
 from typing import Any
 
 from .cache import CacheStore
+from .fs_watch import NativeDirectoryWatcher
 from .hindsight import HindsightProvider
+from .http_pool import SHARED_HTTP_POOL
 from .local_fs import LocalFsProvider
 from .notion import NotionProvider
+from .orb_knowledge import OrbKnowledgeEngine
 from .secrets import CredentialResolver
 
 
@@ -28,7 +33,10 @@ MIME_TYPES: dict[str, str] = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
     ".webp": "image/webp",
+    ".avif": "image/avif",
+    ".pdf": "application/pdf",
     ".ico": "image/x-icon",
     ".woff2": "font/woff2",
     ".woff": "font/woff",
@@ -64,8 +72,7 @@ class FolioEngine:
         self._events: list[dict[str, Any]] = []
         self._subscribers: set[queue.Queue[dict[str, Any] | None]] = set()
         self._last_omarchy_mode = self._read_omarchy_mode()
-        self._theme_stop = threading.Event()
-        self._theme_thread: threading.Thread | None = None
+        self._theme_watcher: NativeDirectoryWatcher | None = None
 
         self.cache = CacheStore(self.state_dir / "folio_cache.sqlite3")
         self.secrets = CredentialResolver(state_dir=self.state_dir)
@@ -76,6 +83,14 @@ class FolioEngine:
         )
         self.hindsight = HindsightProvider(self.cache, self.secrets)
         self.notion = NotionProvider(self.cache, self.secrets)
+        self.copilot = OrbKnowledgeEngine(
+            cache=self.cache,
+            secrets=self.secrets,
+            local_fs=self.local_fs,
+            hindsight=self.hindsight,
+            notion=self.notion,
+            push_event=self.push_event,
+        )
 
     @staticmethod
     def _read_omarchy_mode() -> str | None:
@@ -96,24 +111,50 @@ class FolioEngine:
                 pass
         return None
 
-    def _watch_omarchy_theme(self) -> None:
-        while not self._theme_stop.wait(0.6):
-            mode = self._read_omarchy_mode()
-            if mode and mode != self._last_omarchy_mode:
-                self._last_omarchy_mode = mode
-                self.push_event("theme:changed", {"mode": mode})
+    @staticmethod
+    def _omarchy_watch_roots() -> list[Path]:
+        base = Path.home() / ".local" / "state" / "omarchy"
+        candidates = [
+            base / "current" / "theme",
+            base / "current",
+            base,
+        ]
+        out: list[Path] = []
+        for p in candidates:
+            try:
+                if p.exists():
+                    resolved = p.resolve()
+                    if resolved.is_dir() and resolved not in out:
+                        out.append(resolved)
+            except OSError:
+                pass
+        return out
+
+    def _on_omarchy_fs_change(self) -> None:
+        mode = self._read_omarchy_mode()
+        if mode and mode != self._last_omarchy_mode:
+            self._last_omarchy_mode = mode
+            self.push_event("theme:changed", {"mode": mode})
+        if self._theme_watcher is not None:
+            self._theme_watcher.notify_roots_changed()
 
     def start_background(self) -> None:
         self.local_fs.start_watcher()
-        if not self._theme_thread or not self._theme_thread.is_alive():
-            self._theme_stop.clear()
-            self._theme_thread = threading.Thread(
-                target=self._watch_omarchy_theme, daemon=True, name="folio-theme-watcher"
+        if self._theme_watcher is None:
+            self._theme_watcher = NativeDirectoryWatcher(
+                self._omarchy_watch_roots,
+                self._on_omarchy_fs_change,
+                recursive=False,
+                debounce_sec=0.05,
+                fallback_interval_sec=1.5,
+                name="folio-theme-watcher",
             )
-            self._theme_thread.start()
+            self._theme_watcher.start()
 
     def shutdown(self) -> None:
-        self._theme_stop.set()
+        if self._theme_watcher is not None:
+            self._theme_watcher.stop()
+            self._theme_watcher = None
         with self._events_lock:
             for sub in list(self._subscribers):
                 try:
@@ -121,9 +162,8 @@ class FolioEngine:
                 except Exception:
                     pass
             self._subscribers.clear()
-        if self._theme_thread:
-            self._theme_thread.join(timeout=1.5)
         self.local_fs.stop_watcher()
+        SHARED_HTTP_POOL.close()
         self.cache.close()
 
     def subscribe_events(self) -> queue.Queue[dict[str, Any] | None]:
@@ -165,22 +205,114 @@ class FolioEngine:
             self._events.clear()
             return out
 
+    def _enrich_doc_payload(self, doc: Any) -> dict[str, Any]:
+        payload = doc.to_dict()
+        payload["backlinks"] = self.cache.get_backlinks(doc)
+        payload["sync"] = self.hindsight.compute_note_sync_info(doc)
+        return payload
+
+    def _resolve_doc_by_target(self, target: str, bank_id: str) -> Any:
+        if target.startswith("local://"):
+            return self.local_fs.get_document(target)
+        if target.startswith("hindsight://") or target.startswith(("kp-", "src-")):
+            return self.hindsight.get_document(target, scope=bank_id)
+        if target.startswith("notion://"):
+            return self.notion.get_document(target)
+        doc = self.local_fs.get_document(target)
+        if not doc:
+            doc = self.cache.find_by_slug_or_id(target)
+        if not doc and target.startswith(("kp-", "src-")):
+            doc = self.hindsight.get_document(target, scope=bank_id)
+        return doc
+
+    def _reveal_local_file(self, file_path: Path) -> bool:
+        target = file_path.resolve()
+        if not target.exists():
+            return False
+        if sys.platform == "darwin":
+            opener = resolve_system_binary("open")
+            if opener:
+                subprocess.Popen([opener, "-R", str(target)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return True
+            return False
+
+        file_uri = target.as_uri()
+        dbus_send = resolve_system_binary("dbus-send")
+        if dbus_send:
+            try:
+                res = subprocess.run(
+                    [
+                        dbus_send,
+                        "--session",
+                        "--print-reply",
+                        "--dest=org.freedesktop.FileManager1",
+                        "/org/freedesktop/FileManager1",
+                        "org.freedesktop.FileManager1.ShowItems",
+                        f"array:string:{file_uri}",
+                        "string:",
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=2.5,
+                    check=False,
+                )
+                if res.returncode == 0:
+                    return True
+            except Exception:
+                pass
+
+        parent_dir = str(target.parent if target.is_file() else target)
+        for tool_name, extra_args in (("gio", ["open", parent_dir]), ("xdg-open", [parent_dir])):
+            bin_path = resolve_system_binary(tool_name)
+            if bin_path:
+                try:
+                    subprocess.Popen([bin_path, *extra_args], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    return True
+                except Exception:
+                    pass
+        return False
+
+    def resolve_local_note_asset(self, note_uri: str, rel_asset: str) -> Path | None:
+        note_path = self.local_fs.resolve_filesystem_path(note_uri)
+        if not note_path:
+            return None
+        rest = note_uri[len("local://") :]
+        mount_id, _, _ = rest.partition("/")
+        mount = next((m for m in self.cache.list_mounts() if m["mount_id"] == mount_id), None)
+        if not mount:
+            return None
+        mount_root = Path(mount["root_path"]).resolve()
+        cleaned_rel = urllib.parse.unquote(rel_asset).strip()
+        if cleaned_rel.startswith("/"):
+            candidate = (mount_root / cleaned_rel.lstrip("/")).resolve()
+        else:
+            candidate = (note_path.parent / cleaned_rel).resolve()
+        if not str(candidate).startswith(str(mount_root) + os.sep) or not candidate.is_file():
+            return None
+        return candidate
+
     def dispatch(self, command: str, args: dict[str, Any]) -> Any:
         if command in ("__orb_poll_events", "poll_events"):
             return self.drain_events()
 
         if command == "get_bootstrap":
             active_bank = str(args.get("bank_id") or self.hindsight.default_bank)
+            local_docs = self.cache.list_documents(provider="local-fs")
             return {
                 "providers": {
                     "local_fs": self.local_fs.status(),
-                    "hindsight": self.hindsight.status(),
+                    "hindsight": self.hindsight.status(local_docs=local_docs),
                     "notion": self.notion.status(),
+                    "copilot": self.copilot.status(discover=False),
                 },
-                "banks": self.hindsight.list_banks(),
+                "banks": self.hindsight.list_banks(include_sync_bank=True),
+                "sync_bank": self.hindsight.sync_bank,
                 "active_bank": active_bank,
                 "local_tree": [n.to_dict() for n in self.local_fs.list_tree()],
-                "macros": self.cache.get_kv("latex:macros", {"\\R": "\\mathbb{R}", "\\E": "\\mathbb{E}", "\\Prob": "\\mathbb{P}"}),
+                "macros": self.cache.get_kv(
+                    "latex:macros",
+                    {"\\R": "\\mathbb{R}", "\\E": "\\mathbb{E}", "\\Prob": "\\mathbb{P}"},
+                ),
                 "omarchy_mode": self._read_omarchy_mode(),
             }
 
@@ -198,73 +330,187 @@ class FolioEngine:
                 return [n.to_dict() for n in self.notion.list_tree(scope=scope)]
             raise ValueError(f"Unknown provider: {provider}")
 
+        if command == "list_link_candidates":
+            return {
+                "items": self.cache.list_link_candidates(
+                    query=str(args.get("query") or ""),
+                    limit=int(args.get("limit") or 24),
+                )
+            }
+
         if command == "open_document":
             target = str(args.get("uri") or args.get("id") or "").strip()
             bank_id = str(args.get("bank_id") or self.hindsight.default_bank)
             if not target:
                 raise ValueError("Missing document uri/id")
-            doc = None
-            if target.startswith("local://"):
-                doc = self.local_fs.get_document(target)
-            elif target.startswith("hindsight://") or target.startswith("kp-") or target.startswith("src-"):
-                doc = self.hindsight.get_document(target, scope=bank_id)
-            elif target.startswith("notion://"):
-                doc = self.notion.get_document(target)
-            else:
-                doc = self.local_fs.get_document(target)
-                if not doc:
-                    doc = self.cache.find_by_slug_or_id(target)
-                if not doc and (target.startswith("kp-") or target.startswith("src-")):
-                    doc = self.hindsight.get_document(target, scope=bank_id)
+            doc = self._resolve_doc_by_target(target, bank_id)
             if not doc:
                 raise KeyError(f"Document not found: {target}")
-            payload = doc.to_dict()
-            payload["backlinks"] = self.cache.get_backlinks(doc)
-            return payload
+            return self._enrich_doc_payload(doc)
+
+        if command == "open_filesystem_path":
+            raw_target = str(args.get("path") or args.get("target") or "").strip()
+            bank_id = str(args.get("bank_id") or self.hindsight.default_bank)
+            if not raw_target:
+                raise ValueError("Missing target path or URI")
+            if raw_target.startswith("file://"):
+                raw_target = urllib.parse.unquote(urllib.parse.urlsplit(raw_target).path)
+            elif raw_target.startswith("folio://"):
+                parsed = urllib.parse.urlsplit(raw_target)
+                qs = urllib.parse.parse_qs(parsed.query)
+                raw_target = (
+                    (qs.get("uri") or qs.get("target") or [""])[0]
+                    or urllib.parse.unquote(parsed.path.lstrip("/"))
+                )
+            if raw_target.startswith(("local://", "hindsight://", "notion://", "kp-", "src-")):
+                doc = self._resolve_doc_by_target(raw_target, bank_id)
+            else:
+                doc = self.local_fs.open_filesystem_path(raw_target)
+            return {
+                "document": self._enrich_doc_payload(doc) if doc else None,
+                "tree": [n.to_dict() for n in self.local_fs.list_tree()],
+            }
 
         if command == "save_local_document":
             uri = str(args["uri"])
             raw_markdown = str(args["raw_markdown"])
             doc = self.local_fs.save_document(uri, raw_markdown)
-            payload = doc.to_dict()
-            payload["backlinks"] = self.cache.get_backlinks(doc)
-            return payload
+            return self._enrich_doc_payload(doc)
 
         if command == "create_local_document":
+            tags_arg = args.get("tags")
             doc = self.local_fs.create_document(
                 title=str(args.get("title") or "Untitled Note"),
                 folder=str(args.get("folder") or ""),
                 mount_id=args.get("mount_id"),
                 initial_body=args.get("initial_body"),
+                tags=[str(t) for t in tags_arg] if isinstance(tags_arg, list) else None,
             )
-            payload = doc.to_dict()
-            payload["backlinks"] = []
+            payload = self._enrich_doc_payload(doc)
+            payload["tree"] = [n.to_dict() for n in self.local_fs.list_tree()]
             return payload
 
+        if command == "create_local_folder":
+            res = self.local_fs.create_folder(
+                folder=str(args.get("folder") or ""),
+                mount_id=args.get("mount_id"),
+            )
+            return {
+                **res,
+                "folders": self.local_fs.list_folders(),
+                "tree": [n.to_dict() for n in self.local_fs.list_tree()],
+            }
+
+        if command == "rename_local_document":
+            doc = self.local_fs.rename_or_move_document(
+                str(args["uri"]),
+                new_title=args.get("new_title"),
+                new_folder=args.get("new_folder"),
+                raw_markdown_override=args.get("raw_markdown"),
+            )
+            return {
+                "document": self._enrich_doc_payload(doc),
+                "folders": self.local_fs.list_folders(),
+                "tree": [n.to_dict() for n in self.local_fs.list_tree()],
+            }
+
+        if command == "open_daily_note":
+            doc = self.local_fs.open_or_create_daily_note(args.get("date"))
+            return {
+                "document": self._enrich_doc_payload(doc),
+                "tree": [n.to_dict() for n in self.local_fs.list_tree()],
+            }
+
+        if command == "fork_to_local":
+            source_uri = str(args.get("uri") or "").strip()
+            bank_id = str(args.get("bank_id") or self.hindsight.default_bank)
+            folder = str(args.get("folder") or "Notes")
+            src_doc = self._resolve_doc_by_target(source_uri, bank_id)
+            if not src_doc:
+                raise KeyError(f"Source document not found: {source_uri}")
+            forked = self.local_fs.fork_remote_to_local(src_doc, folder=folder)
+            return {
+                "document": self._enrich_doc_payload(forked),
+                "tree": [n.to_dict() for n in self.local_fs.list_tree()],
+            }
+
+        if command == "reveal_in_file_manager":
+            uri = str(args.get("uri") or "").strip()
+            fpath = self.local_fs.resolve_filesystem_path(uri)
+            if not fpath:
+                raise ValueError(f"Cannot resolve local path for {uri}")
+            ok = self._reveal_local_file(fpath)
+            return {"ok": ok, "path": str(fpath)}
+
         if command == "delete_local_document":
-            return self.local_fs.delete_local_document(str(args["uri"]))
+            res = self.local_fs.delete_local_document(str(args["uri"]))
+            return {
+                **res,
+                "tree": [n.to_dict() for n in self.local_fs.list_tree()],
+                "sync_summary": self.hindsight.summarize_sync(),
+            }
 
         if command == "mount_directory":
             res = self.local_fs.mount_directory(
                 Path(str(args["path"])),
                 label=args.get("label"),
             )
-            return {"mount": res, "tree": [n.to_dict() for n in self.local_fs.list_tree()]}
+            return {
+                "mount": res,
+                "providers_local": self.local_fs.status(),
+                "tree": [n.to_dict() for n in self.local_fs.list_tree()],
+            }
 
         if command == "unmount_directory":
             self.local_fs.unmount_directory(str(args["mount_id"]))
-            return {"tree": [n.to_dict() for n in self.local_fs.list_tree()]}
+            return {
+                "providers_local": self.local_fs.status(),
+                "tree": [n.to_dict() for n in self.local_fs.list_tree()],
+            }
 
         if command == "unified_search":
             query = str(args.get("query") or "")
             bank_id = str(args.get("bank_id") or self.hindsight.default_bank)
             include_hindsight = bool(args.get("include_hindsight", True))
             include_notion = bool(args.get("include_notion", True))
+            local_only = bool(args.get("local_only", False))
+            banks_arg = args.get("banks")
+            banks_list = [str(b) for b in banks_arg if b] if isinstance(banks_arg, list) else None
             limit = int(args.get("limit") or 24)
 
             local_hits = self.local_fs.search(query, limit=limit)
-            hs_hits = self.hindsight.search(query, scope=bank_id, limit=limit // 2) if include_hindsight else []
-            notion_hits = self.notion.search(query, limit=8) if include_notion else []
+            if local_only:
+                hs_hits = (
+                    self.hindsight.search(
+                        query, scope=bank_id, limit=limit // 2, local_only=True, banks=banks_list
+                    )
+                    if include_hindsight
+                    else []
+                )
+                notion_hits = (
+                    self.cache.search_fts(query, provider="notion", limit=8) if include_notion else []
+                )
+            else:
+                hs_hits = []
+                notion_hits = []
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                    fut_hs = (
+                        pool.submit(
+                            self.hindsight.search,
+                            query,
+                            bank_id,
+                            max(8, limit // 2),
+                            local_only=False,
+                            banks=banks_list,
+                        )
+                        if include_hindsight
+                        else None
+                    )
+                    fut_no = pool.submit(self.notion.search, query, 8) if include_notion else None
+                    if fut_hs is not None:
+                        hs_hits = fut_hs.result()
+                    if fut_no is not None:
+                        notion_hits = fut_no.result()
 
             combined = [*local_hits, *hs_hits, *notion_hits]
             seen: set[str] = set()
@@ -274,7 +520,7 @@ class FolioEngine:
                 if u not in seen:
                     seen.add(u)
                     deduped.append(item)
-            return {"results": deduped[:limit], "bank_id": bank_id}
+            return {"results": deduped[:limit], "bank_id": bank_id, "local_only": local_only}
 
         if command == "hindsight_save_source":
             return self.hindsight.save_source_explicit(
@@ -288,6 +534,52 @@ class FolioEngine:
                 profile=args.get("profile"),
             )
 
+        if command == "hindsight_sync_note":
+            uri = str(args.get("uri") or "").strip()
+            if not uri.startswith("local://"):
+                raise ValueError("hindsight_sync_note requires a local:// note URI")
+            if args.get("raw_markdown") is not None:
+                doc = self.local_fs.save_document(uri, str(args["raw_markdown"]))
+            else:
+                doc = self.local_fs.get_document(uri)
+            if not doc:
+                raise KeyError(f"Local note not found: {uri}")
+            res = self.hindsight.sync_local_note(
+                doc,
+                bank_id=args.get("bank_id"),
+                promote_raw_source=bool(args.get("promote_raw_source", False)),
+                force=bool(args.get("force", False)),
+            )
+            return {
+                **res,
+                "document": self._enrich_doc_payload(doc),
+                "sync_summary": self.hindsight.summarize_sync(),
+                "local_tree": [n.to_dict() for n in self.local_fs.list_tree()],
+            }
+
+        if command == "hindsight_sync_batch":
+            local_docs = self.cache.list_documents(provider="local-fs")
+            res = self.hindsight.sync_batch_notes(
+                local_docs,
+                bank_id=args.get("bank_id"),
+                include_unsynced=bool(args.get("include_unsynced", True)),
+            )
+            return {
+                **res,
+                "local_tree": [n.to_dict() for n in self.local_fs.list_tree()],
+            }
+
+        if command == "hindsight_set_sync_bank":
+            new_bank = self.hindsight.set_sync_bank(str(args.get("bank_id") or "folio"))
+            return {
+                "sync_bank": new_bank,
+                "banks": self.hindsight.list_banks(include_sync_bank=True),
+                "sync_summary": self.hindsight.summarize_sync(),
+            }
+
+        if command == "hindsight_sync_status":
+            return self.hindsight.summarize_sync()
+
         if command == "notion_sync":
             res = self.notion.sync_recent(limit=int(args.get("limit") or 20))
             return {**res, "tree": [n.to_dict() for n in self.notion.list_tree()]}
@@ -295,14 +587,49 @@ class FolioEngine:
         if command == "set_session_credential":
             name = str(args.get("name") or "")
             value = str(args.get("value") or "")
-            if name not in ("hindsight_api_key", "spark_memory_api_token", "notion_api_key", "notion_api_key_perso"):
+            allowed_slots = (
+                "hindsight_api_key",
+                "spark_memory_api_token",
+                "notion_api_key",
+                "notion_api_key_perso",
+                "orbrouter_api_key",
+            )
+            if name not in allowed_slots:
                 raise ValueError(f"Unsupported credential slot: {name}")
             self.secrets.set_ephemeral(name, value)
             self.hindsight._banks_cache = None
+            self.copilot._models_cache = None
             return {
                 "hindsight": self.hindsight.status(),
                 "notion": self.notion.status(),
+                "copilot": self.copilot.status(discover=True),
             }
+
+        if command == "copilot_status":
+            return self.copilot.status(discover=bool(args.get("discover", True)))
+
+        if command == "copilot_query":
+            hist = args.get("history")
+            return self.copilot.start_query(
+                prompt=str(args.get("prompt") or ""),
+                profile=str(args.get("profile") or "builtin/smart"),
+                scope=str(args.get("scope") or "vault"),
+                active_uri=args.get("active_uri"),
+                active_markdown=args.get("active_markdown"),
+                selection=args.get("selection"),
+                history=hist if isinstance(hist, list) else None,
+                bank_id=args.get("bank_id"),
+                auto_apply=bool(args.get("auto_apply", False)),
+                allow_external_for_private=bool(args.get("allow_external_for_private", False)),
+                request_id=args.get("request_id"),
+                blocking=bool(args.get("blocking", False)),
+            )
+
+        if command == "copilot_cancel":
+            return self.copilot.cancel_query(str(args.get("request_id") or ""))
+
+        if command == "copilot_apply_proposal":
+            return self.copilot.apply_proposal(str(args.get("proposal_id") or ""))
 
         if command == "save_latex_macros":
             macros = args.get("macros") or {}
@@ -316,12 +643,13 @@ class FolioEngine:
             if command == "open_external_url":
                 url = str(args.get("url") or "")
                 if url.startswith(("https://", "http://", "mailto:")):
-                    import subprocess
                     opener_name = "open" if sys.platform == "darwin" else "xdg-open"
                     opener = resolve_system_binary(opener_name)
                     if opener:
                         try:
-                            subprocess.Popen([opener, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            subprocess.Popen(
+                                [opener, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                            )
                         except Exception:
                             pass
             return {"ok": True}
@@ -389,6 +717,27 @@ def create_http_handler(
             clean_path = self.path.split("?", 1)[0].split("#", 1)[0]
             if clean_path == "/__health":
                 self._json_response(200, {"status": "ok", "service": "folio-locald"})
+                return
+            if clean_path == "/__folio_asset":
+                if not self._check_token(allow_query=True):
+                    self._json_response(403, {"error": "Forbidden: invalid locald token"})
+                    return
+                qs = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                note_uri = (qs.get("uri") or [""])[0]
+                rel_asset = (qs.get("rel") or [""])[0]
+                asset_path = engine.resolve_local_note_asset(note_uri, rel_asset)
+                if not asset_path:
+                    self._json_response(404, {"error": "Local asset not found"})
+                    return
+                data = asset_path.read_bytes()
+                mime = MIME_TYPES.get(asset_path.suffix.lower(), "application/octet-stream")
+                self.send_response(200)
+                self._send_cors()
+                self.send_header("Content-Type", mime)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                self.wfile.write(data)
                 return
             if clean_path in ("/__folio_events", "/__orb_events"):
                 if not self._check_token(allow_query=True):
@@ -463,13 +812,17 @@ def create_http_handler(
 def run_server() -> int:
     if "--self-test" in sys.argv[1:]:
         import tempfile
+
         with tempfile.TemporaryDirectory() as tmp:
             eng = FolioEngine(Path(tmp) / "state", Path(tmp) / "notes")
             boot = eng.dispatch("get_bootstrap", {})
             assert boot["providers"]["local_fs"]["connected"] is True
             assert len(boot["local_tree"]) >= 1
+            assert len(boot["providers"]["copilot"]["profiles"]) == 4
             hits = eng.dispatch("unified_search", {"query": "Bayesian", "include_hindsight": False})
             assert len(hits["results"]) >= 1
+            daily = eng.dispatch("open_daily_note", {"date": "2026-11-11"})
+            assert daily["document"]["uri"].endswith("Journal/2026-11-11.md")
             assert compute_static_cache_control("assets/index-abc123.js", ".js").endswith("immutable")
             assert compute_static_cache_control("index.html", ".html") == "no-cache"
             assert MIME_TYPES[".wasm"] == "application/wasm"

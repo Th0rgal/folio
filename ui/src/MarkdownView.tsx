@@ -1,9 +1,11 @@
 import { For, Show, createEffect, createSignal } from "solid-js";
 import { Dynamic } from "solid-js/web";
 import { highlightCodeSafe } from "./codeHighlight";
+import * as Ic from "./icons";
 import { renderKatexSafe } from "./katexRender";
 import { extractMathSpans, splitFrontmatterOffset } from "./mathParser";
 import { renderMermaidDiagram } from "./mermaidRender";
+import { resolveLocalAssetUrl } from "./rpc";
 import type { MathSpan, ThemeMode } from "./types";
 
 export interface InlineNodeText {
@@ -28,12 +30,21 @@ export interface InlineNodeLink {
   href: string;
   label: string;
 }
+export interface InlineNodeImage {
+  kind: "image";
+  src: string;
+  alt: string;
+}
 export interface InlineNodeStrong {
   kind: "strong";
   children: InlineNode[];
 }
 export interface InlineNodeEm {
   kind: "em";
+  children: InlineNode[];
+}
+export interface InlineNodeStrike {
+  kind: "strike";
   children: InlineNode[];
 }
 export interface InlineNodeRefChip {
@@ -47,20 +58,34 @@ export type InlineNode =
   | InlineNodeMath
   | InlineNodeWikilink
   | InlineNodeLink
+  | InlineNodeImage
   | InlineNodeStrong
   | InlineNodeEm
+  | InlineNodeStrike
   | InlineNodeRefChip;
 
+interface ListItemNode {
+  checked: boolean | null;
+  taskOrdinal: number | null;
+  depth: number;
+  inlines: InlineNode[];
+}
+
 type BlockNode =
-  | { kind: "heading"; level: 1 | 2 | 3 | 4; text: string; id: string; inlines: InlineNode[] }
+  | { kind: "heading"; level: 1 | 2 | 3 | 4 | 5 | 6; text: string; id: string; inlines: InlineNode[] }
   | { kind: "paragraph"; inlines: InlineNode[] }
   | { kind: "math_block"; span: MathSpan }
   | { kind: "code_block"; lang: string; code: string }
   | { kind: "mermaid_block"; source: string }
   | { kind: "callout"; calloutType: string; title: string; bodyLines: InlineNode[][] }
   | { kind: "blockquote"; lines: InlineNode[][] }
-  | { kind: "list"; ordered: boolean; items: Array<{ checked: boolean | null; inlines: InlineNode[] }> }
-  | { kind: "table"; headers: InlineNode[][]; aligns: Array<"left" | "center" | "right">; rows: InlineNode[][][] }
+  | { kind: "list"; ordered: boolean; items: ListItemNode[] }
+  | {
+      kind: "table";
+      headers: InlineNode[][];
+      aligns: Array<"left" | "center" | "right">;
+      rows: InlineNode[][][];
+    }
   | { kind: "hr" };
 
 const MATH_TOKEN_RE = /\uE000MATH(\d+)\uE001/;
@@ -104,7 +129,7 @@ function parseInlines(raw: string, spans: MathSpan[]): InlineNode[] {
 
   const pushText = (txt: string) => {
     if (!txt) return;
-    const unescaped = txt.replace(/\\([\\`$[\](){}*_#+-])/g, "$1");
+    const unescaped = txt.replace(/\\([\\`$[\](){}*_#+-~])/g, "$1");
     const last = nodes[nodes.length - 1];
     if (last && last.kind === "text") {
       last.text += unescaped;
@@ -114,7 +139,6 @@ function parseInlines(raw: string, spans: MathSpan[]): InlineNode[] {
   };
 
   while (i < raw.length) {
-    // Math token
     if (raw[i] === "\uE000" && raw.startsWith("\uE000MATH", i)) {
       const end = raw.indexOf("\uE001", i + 5);
       if (end !== -1) {
@@ -128,14 +152,12 @@ function parseInlines(raw: string, spans: MathSpan[]): InlineNode[] {
       }
     }
 
-    // Escaped char
     if (raw[i] === "\\" && i + 1 < raw.length) {
       pushText(raw.slice(i, i + 2));
       i += 2;
       continue;
     }
 
-    // Inline code
     if (raw[i] === "`") {
       let ticks = 0;
       while (i + ticks < raw.length && raw[i + ticks] === "`") ticks += 1;
@@ -143,7 +165,6 @@ function parseInlines(raw: string, spans: MathSpan[]): InlineNode[] {
       const close = raw.indexOf(delim, i + ticks);
       if (close !== -1) {
         const codeContent = raw.slice(i + ticks, close);
-        // Restore any accidental math tokens if any existed (mathParser skips inline code so none exist)
         if (/^(?:kp|src)-[a-zA-Z0-9_-]{6,}$/.test(codeContent.trim())) {
           nodes.push({ kind: "refchip", refId: codeContent.trim() });
         } else {
@@ -151,6 +172,23 @@ function parseInlines(raw: string, spans: MathSpan[]): InlineNode[] {
         }
         i = close + ticks;
         continue;
+      }
+    }
+
+    // Image ![alt](src)
+    if (raw[i] === "!" && raw[i + 1] === "[") {
+      const closeBracket = raw.indexOf("]", i + 2);
+      if (closeBracket !== -1 && raw[closeBracket + 1] === "(") {
+        const closeParen = raw.indexOf(")", closeBracket + 2);
+        if (closeParen !== -1) {
+          const alt = raw.slice(i + 2, closeBracket);
+          const src = raw.slice(closeBracket + 2, closeParen).trim();
+          if (src) {
+            nodes.push({ kind: "image", src, alt });
+            i = closeParen + 1;
+            continue;
+          }
+        }
       }
     }
 
@@ -185,6 +223,19 @@ function parseInlines(raw: string, spans: MathSpan[]): InlineNode[] {
       }
     }
 
+    // Strikethrough ~~...~~
+    if (raw[i] === "~" && raw[i + 1] === "~") {
+      const close = raw.indexOf("~~", i + 2);
+      if (close > i + 2) {
+        nodes.push({
+          kind: "strike",
+          children: parseInlines(raw.slice(i + 2, close), spans),
+        });
+        i = close + 2;
+        continue;
+      }
+    }
+
     // Strong **...**
     if (raw[i] === "*" && raw[i + 1] === "*") {
       const close = raw.indexOf("**", i + 2);
@@ -212,7 +263,10 @@ function parseInlines(raw: string, spans: MathSpan[]): InlineNode[] {
     }
 
     // Bare Hindsight IDs in prose (`kp-xxxx` or `src-xxxx`)
-    if ((raw.startsWith("kp-", i) || raw.startsWith("src-", i)) && (i === 0 || /[\s([,;:]/.test(raw[i - 1]))) {
+    if (
+      (raw.startsWith("kp-", i) || raw.startsWith("src-", i)) &&
+      (i === 0 || /[\s([,;:]/.test(raw[i - 1]))
+    ) {
       const m = /^(?:kp|src)-[a-f0-9]{8,40}/i.exec(raw.slice(i));
       if (m) {
         nodes.push({ kind: "refchip", refId: m[0] });
@@ -247,11 +301,16 @@ function splitTableCells(line: string): string[] {
   return cells;
 }
 
-function parseBlocks(rawMarkdown: string): { blocks: BlockNode[]; spans: MathSpan[]; headings: Array<{ level: number; text: string; id: string }> } {
+function parseBlocks(rawMarkdown: string): {
+  blocks: BlockNode[];
+  spans: MathSpan[];
+  headings: Array<{ level: number; text: string; id: string }>;
+} {
   const { tokenizedBody, spans } = replaceMathWithPlaceholders(rawMarkdown);
   const lines = tokenizedBody.replace(/\r\n/g, "\n").split("\n");
   const blocks: BlockNode[] = [];
   const headings: Array<{ level: number; text: string; id: string }> = [];
+  let taskCounter = 0;
 
   let i = 0;
   while (i < lines.length) {
@@ -306,12 +365,15 @@ function parseBlocks(rawMarkdown: string): { blocks: BlockNode[]; spans: MathSpa
       continue;
     }
 
-    // Heading
-    const headingMatch = /^(#{1,4})\s+(.+)$/.exec(trimmed);
+    // Heading h1..h6
+    const headingMatch = /^(#{1,6})\s+(.+)$/.exec(trimmed);
     if (headingMatch) {
-      const level = Math.min(4, headingMatch[1].length) as 1 | 2 | 3 | 4;
+      const level = Math.min(6, headingMatch[1].length) as 1 | 2 | 3 | 4 | 5 | 6;
       const rawHeading = headingMatch[2].trim();
-      const cleanHeading = rawHeading.replace(/\uE000MATH(\d+)\uE001/g, (_, idx) => spans[Number(idx)]?.tex || "");
+      const cleanHeading = rawHeading.replace(
+        /\uE000MATH(\d+)\uE001/g,
+        (_, idx) => spans[Number(idx)]?.tex || "",
+      );
       const id = slugifyHeading(cleanHeading);
       headings.push({ level, text: cleanHeading, id });
       blocks.push({
@@ -372,29 +434,34 @@ function parseBlocks(rawMarkdown: string): { blocks: BlockNode[]; spans: MathSpa
       continue;
     }
 
-    // List (unordered / task / ordered)
+    // List (unordered / task / ordered) with indentation depth
     const listMatch = /^([ \t]*)(?:([-*+])|(\d+\.))\s+(.*)$/.exec(line);
     if (listMatch) {
       const ordered = Boolean(listMatch[3]);
-      const items: Array<{ checked: boolean | null; inlines: InlineNode[] }> = [];
+      const baseIndent = listMatch[1].replace(/\t/g, "  ").length;
+      const items: ListItemNode[] = [];
       while (i < lines.length) {
         const m = /^([ \t]*)(?:([-*+])|(\d+\.))\s+(.*)$/.exec(lines[i]);
         if (!m) break;
+        const indent = Math.max(0, m[1].replace(/\t/g, "  ").length - baseIndent);
+        const depth = Math.min(4, Math.floor(indent / 2));
         let itemBody = m[4];
         let checked: boolean | null = null;
+        let taskOrdinal: number | null = null;
         const taskMatch = /^\[([ xX])\]\s+(.*)$/.exec(itemBody);
         if (taskMatch) {
           checked = taskMatch[1].toLowerCase() === "x";
           itemBody = taskMatch[2];
+          taskOrdinal = taskCounter++;
         }
-        items.push({ checked, inlines: parseInlines(itemBody, spans) });
+        items.push({ checked, taskOrdinal, depth, inlines: parseInlines(itemBody, spans) });
         i += 1;
       }
       blocks.push({ kind: "list", ordered, items });
       continue;
     }
 
-    // Paragraph (coalesce consecutive plain lines, stopping before special blocks)
+    // Paragraph
     const paraLines: string[] = [];
     while (i < lines.length) {
       const l = lines[i];
@@ -402,11 +469,12 @@ function parseBlocks(rawMarkdown: string): { blocks: BlockNode[]; spans: MathSpa
       if (!t) break;
       if (
         /^[ \t]{0,3}(`{3,}|~{3,})/.test(l) ||
-        /^(#{1,4})\s+/.test(t) ||
+        /^(#{1,6})\s+/.test(t) ||
         t.startsWith(">") ||
         /^(?:-{3,}|\*{3,}|_{3,})$/.test(t) ||
         /^([ \t]*)(?:[-*+]|\d+\.)\s+/.test(l) ||
-        (/^\uE000MATH(\d+)\uE001$/.test(t) && spans[Number(MATH_TOKEN_RE.exec(t)?.[1] ?? -1)]?.display)
+        (/^\uE000MATH(\d+)\uE001$/.test(t) &&
+          spans[Number(MATH_TOKEN_RE.exec(t)?.[1] ?? -1)]?.display)
       ) {
         break;
       }
@@ -426,9 +494,48 @@ function parseBlocks(rawMarkdown: string): { blocks: BlockNode[]; spans: MathSpa
   return { blocks, spans, headings };
 }
 
+/** Toggle the N-th `- [ ]` / `- [x]` task item outside fenced code blocks in raw Markdown. */
+export function toggleMarkdownTaskAt(rawMarkdown: string, targetOrdinal: number): string {
+  const lines = rawMarkdown.split("\n");
+  let inFence = false;
+  let fenceToken = "";
+  let seen = 0;
+
+  for (let idx = 0; idx < lines.length; idx++) {
+    const ln = lines[idx];
+    const f = /^[ \t]{0,3}(`{3,}|~{3,})/.exec(ln);
+    if (f) {
+      if (!inFence) {
+        inFence = true;
+        fenceToken = f[1];
+      } else if (ln.replace(/^[ \t]{0,3}/, "").startsWith(fenceToken)) {
+        inFence = false;
+      }
+      continue;
+    }
+    if (inFence) continue;
+
+    const m = /^([ \t]*(?:[-*+]|\d+\.)\s+\[)([ xX])(\]\s+.*)$/.exec(ln);
+    if (m) {
+      if (seen === targetOrdinal) {
+        const nextMark = m[2].toLowerCase() === "x" ? " " : "x";
+        lines[idx] = `${m[1]}${nextMark}${m[3]}`;
+        return lines.join("\n");
+      }
+      seen += 1;
+    }
+  }
+  return rawMarkdown;
+}
+
+/** Orb #1658-matched fluid Mermaid diagram stage with touchpad pinch, wheel pan, fit/100%, and fullscreen lightbox. */
 function MermaidCard(props: { source: string; themeMode: ThemeMode }) {
   const [svgUrl, setSvgUrl] = createSignal<string | null>(null);
   const [err, setErr] = createSignal<string | null>(null);
+  const [scale, setScale] = createSignal(1);
+  const [pan, setPan] = createSignal({ x: 0, y: 0 });
+  const [expanded, setExpanded] = createSignal(false);
+  let dragStart: { x: number; y: number; px: number; py: number } | null = null;
 
   createEffect(() => {
     const src = props.source;
@@ -448,29 +555,140 @@ function MermaidCard(props: { source: string; themeMode: ThemeMode }) {
     };
   });
 
+  const clampScale = (s: number) => Math.min(5, Math.max(0.35, s));
+  const resetView = () => {
+    setScale(1);
+    setPan({ x: 0, y: 0 });
+  };
+
+  const handleWheel = (e: WheelEvent) => {
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      const factor = Math.exp(-e.deltaY * 0.0045);
+      setScale((prev) => clampScale(prev * factor));
+    } else if (scale() > 1.02) {
+      e.preventDefault();
+      setPan((p) => ({ x: p.x - e.deltaX, y: p.y - e.deltaY }));
+    }
+  };
+
   return (
-    <div class="mermaid-card">
-      <Show
-        when={!err()}
-        fallback={
-          <pre class="code-fence mermaid-fallback">
-            <code>{props.source}</code>
-          </pre>
-        }
-      >
+    <>
+      <div class="mermaid-card">
+        <div class="mermaid-toolbar" onClick={(e) => e.stopPropagation()}>
+          <span class="mermaid-label">Diagram</span>
+          <div class="mermaid-controls">
+            <button
+              type="button"
+              class="mermaid-btn"
+              title="Zoom out"
+              onClick={() => setScale((s) => clampScale(s / 1.25))}
+            >
+              −
+            </button>
+            <button
+              type="button"
+              class="mermaid-btn mono"
+              title="Reset zoom & pan"
+              onClick={resetView}
+            >
+              {Math.round(scale() * 100)}%
+            </button>
+            <button
+              type="button"
+              class="mermaid-btn"
+              title="Zoom in"
+              onClick={() => setScale((s) => clampScale(s * 1.25))}
+            >
+              +
+            </button>
+            <button
+              type="button"
+              class="mermaid-btn"
+              title="Expand diagram"
+              onClick={() => setExpanded(true)}
+            >
+              <Ic.MaximizeIcon size={11.5} />
+            </button>
+          </div>
+        </div>
+
         <Show
-          when={svgUrl()}
-          fallback={<div class="mermaid-loading">Rendering diagram…</div>}
+          when={!err()}
+          fallback={
+            <pre class="code-fence mermaid-fallback">
+              <code>{props.source}</code>
+            </pre>
+          }
         >
-          {(url) => <img class="mermaid-svg" src={url()} alt="Mermaid diagram" />}
+          <Show when={svgUrl()} fallback={<div class="mermaid-loading">Rendering diagram…</div>}>
+            {(url) => (
+              <div
+                class={`mermaid-stage ${scale() > 1.02 ? "is-zoomed" : ""}`}
+                onWheel={handleWheel}
+                onPointerDown={(e) => {
+                  if (e.button !== 0) return;
+                  dragStart = { x: e.clientX, y: e.clientY, px: pan().x, py: pan().y };
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                }}
+                onPointerMove={(e) => {
+                  if (!dragStart) return;
+                  setPan({
+                    x: dragStart.px + (e.clientX - dragStart.x),
+                    y: dragStart.py + (e.clientY - dragStart.y),
+                  });
+                }}
+                onPointerUp={() => {
+                  dragStart = null;
+                }}
+                onDblClick={resetView}
+              >
+                <img
+                  class="mermaid-svg"
+                  src={url()}
+                  alt="Mermaid diagram"
+                  draggable={false}
+                  style={{
+                    transform: `translate(${pan().x}px, ${pan().y}px) scale(${scale()})`,
+                  }}
+                />
+              </div>
+            )}
+          </Show>
         </Show>
+      </div>
+
+      <Show when={expanded() && svgUrl()}>
+        {(url) => (
+          <div class="dlg-back dlg-back-dim" onClick={() => setExpanded(false)}>
+            <div class="mermaid-lightbox" onClick={(e) => e.stopPropagation()}>
+              <div class="mermaid-toolbar">
+                <span class="mermaid-label">Mermaid Diagram · Pinch or Ctrl+Scroll to zoom</span>
+                <button type="button" class="dlg-close" onClick={() => setExpanded(false)}>
+                  <Ic.CloseIcon />
+                </button>
+              </div>
+              <div class="mermaid-stage mermaid-stage-expanded" onWheel={handleWheel}>
+                <img
+                  class="mermaid-svg"
+                  src={url()}
+                  alt="Expanded Mermaid diagram"
+                  style={{
+                    transform: `translate(${pan().x}px, ${pan().y}px) scale(${scale()})`,
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+        )}
       </Show>
-    </div>
+    </>
   );
 }
 
 function InlineRun(props: {
   nodes: InlineNode[];
+  noteUri?: string | null;
   macros: Record<string, string>;
   activeMathIndex: number | null;
   onSelectMath: (span: MathSpan, anchor: HTMLElement) => void;
@@ -482,6 +700,17 @@ function InlineRun(props: {
       {(node) => {
         if (node.kind === "text") return <>{node.text}</>;
         if (node.kind === "code") return <code class="inline-code">{node.code}</code>;
+        if (node.kind === "image") {
+          const resolved = () => resolveLocalAssetUrl(props.noteUri, node.src);
+          return (
+            <span class="md-figure">
+              <img class="md-img" src={resolved()} alt={node.alt || "Embedded image"} loading="lazy" />
+              <Show when={node.alt}>
+                <span class="md-figcaption">{node.alt}</span>
+              </Show>
+            </span>
+          );
+        }
         if (node.kind === "refchip") {
           const isKp = node.refId.startsWith("kp-");
           return (
@@ -517,7 +746,11 @@ function InlineRun(props: {
               class="md-link"
               onClick={(e) => {
                 e.preventDefault();
-                if (node.href.startsWith("http://") || node.href.startsWith("https://")) {
+                if (
+                  node.href.startsWith("http://") ||
+                  node.href.startsWith("https://") ||
+                  node.href.startsWith("mailto:")
+                ) {
                   props.onExternalUrl(node.href);
                 } else {
                   props.onOpenWikilink(node.href);
@@ -540,6 +773,13 @@ function InlineRun(props: {
             <em>
               <InlineRun {...props} nodes={node.children} />
             </em>
+          );
+        }
+        if (node.kind === "strike") {
+          return (
+            <del class="md-del">
+              <InlineRun {...props} nodes={node.children} />
+            </del>
           );
         }
         if (node.kind === "math") {
@@ -567,12 +807,14 @@ function InlineRun(props: {
 
 export function MarkdownView(props: {
   rawMarkdown: string;
+  noteUri?: string | null;
   macros: Record<string, string>;
   themeMode: ThemeMode;
   activeMathIndex: number | null;
   onSelectMath: (span: MathSpan, anchor: HTMLElement) => void;
   onOpenWikilink: (target: string) => void;
   onExternalUrl: (url: string) => void;
+  onToggleTask?: (taskOrdinal: number) => void;
 }) {
   const parsed = () => parseBlocks(props.rawMarkdown);
   const [copiedIdx, setCopiedIdx] = createSignal<number | null>(null);
@@ -582,11 +824,16 @@ export function MarkdownView(props: {
       <For each={parsed().blocks}>
         {(block, idx) => {
           if (block.kind === "heading") {
-            const tag = `h${block.level}` as "h1" | "h2" | "h3" | "h4";
+            const tag = `h${block.level}` as "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
             return (
-              <Dynamic component={tag} id={block.id} class={`md-h md-h${block.level}`}>
+              <Dynamic
+                component={tag}
+                id={block.id}
+                class={`md-h md-h${Math.min(4, block.level)}`}
+              >
                 <InlineRun
                   nodes={block.inlines}
+                  noteUri={props.noteUri}
                   macros={props.macros}
                   activeMathIndex={props.activeMathIndex}
                   onSelectMath={props.onSelectMath}
@@ -602,6 +849,7 @@ export function MarkdownView(props: {
               <p class="md-p">
                 <InlineRun
                   nodes={block.inlines}
+                  noteUri={props.noteUri}
                   macros={props.macros}
                   activeMathIndex={props.activeMathIndex}
                   onSelectMath={props.onSelectMath}
@@ -682,6 +930,7 @@ export function MarkdownView(props: {
                       <p>
                         <InlineRun
                           nodes={lineNodes}
+                          noteUri={props.noteUri}
                           macros={props.macros}
                           activeMathIndex={props.activeMathIndex}
                           onSelectMath={props.onSelectMath}
@@ -704,6 +953,7 @@ export function MarkdownView(props: {
                     <p>
                       <InlineRun
                         nodes={lineNodes}
+                        noteUri={props.noteUri}
                         macros={props.macros}
                         activeMathIndex={props.activeMathIndex}
                         onSelectMath={props.onSelectMath}
@@ -723,15 +973,34 @@ export function MarkdownView(props: {
               <Dynamic component={listTag} class="md-list">
                 <For each={block.items}>
                   {(item) => (
-                    <li class={item.checked !== null ? "md-task-item" : ""}>
+                    <li
+                      class={item.checked !== null ? "md-task-item" : ""}
+                      style={
+                        item.depth > 0 ? { "margin-left": `${item.depth * 18}px` } : undefined
+                      }
+                    >
                       <Show when={item.checked !== null}>
-                        <span class={`task-checkbox ${item.checked ? "checked" : ""}`}>
+                        <button
+                          type="button"
+                          class={`task-checkbox ${item.checked ? "checked" : ""} ${
+                            props.onToggleTask ? "interactive" : ""
+                          }`}
+                          disabled={!props.onToggleTask}
+                          aria-label={item.checked ? "Mark incomplete" : "Mark complete"}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (props.onToggleTask && item.taskOrdinal !== null) {
+                              props.onToggleTask(item.taskOrdinal);
+                            }
+                          }}
+                        >
                           {item.checked ? "✓" : ""}
-                        </span>
+                        </button>
                       </Show>
                       <span class={item.checked ? "task-done-text" : ""}>
                         <InlineRun
                           nodes={item.inlines}
+                          noteUri={props.noteUri}
                           macros={props.macros}
                           activeMathIndex={props.activeMathIndex}
                           onSelectMath={props.onSelectMath}
@@ -757,6 +1026,7 @@ export function MarkdownView(props: {
                           <th style={{ "text-align": block.aligns[colIdx()] || "left" }}>
                             <InlineRun
                               nodes={cell}
+                              noteUri={props.noteUri}
                               macros={props.macros}
                               activeMathIndex={props.activeMathIndex}
                               onSelectMath={props.onSelectMath}
@@ -777,6 +1047,7 @@ export function MarkdownView(props: {
                               <td style={{ "text-align": block.aligns[colIdx()] || "left" }}>
                                 <InlineRun
                                   nodes={cell}
+                                  noteUri={props.noteUri}
                                   macros={props.macros}
                                   activeMathIndex={props.activeMathIndex}
                                   onSelectMath={props.onSelectMath}
@@ -798,7 +1069,6 @@ export function MarkdownView(props: {
           if (block.kind === "hr") {
             return <hr class="md-hr" />;
           }
-
           return null;
         }}
       </For>

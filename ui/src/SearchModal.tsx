@@ -1,12 +1,24 @@
-import { For, Show, createEffect, createSignal, onCleanup } from "solid-js";
+import { For, type JSX, Show, createEffect, createSignal, onCleanup } from "solid-js";
 import * as Ic from "./icons";
 import { rpcInvoke } from "./rpc";
 import type { SearchHit } from "./types";
+
+function renderSafeMarks(snippet: string): JSX.Element[] {
+  const parts = snippet.split(/(<mark>.*?<\/mark>)/g);
+  return parts.map((seg) => {
+    if (seg.startsWith("<mark>") && seg.endsWith("</mark>")) {
+      return <mark class="fts-mark">{seg.slice(6, -7)}</mark>;
+    }
+    return <>{seg.replace(/<\/?mark>/g, "")}</>;
+  });
+}
 
 export function SearchModal(props: {
   open: boolean;
   initialQuery?: string;
   activeBank: string;
+  syncBank?: string;
+  banks?: Array<{ bank_id: string }>;
   onSelectUri: (uri: string) => void;
   onClose: () => void;
 }) {
@@ -15,25 +27,58 @@ export function SearchModal(props: {
   const [selectedIndex, setSelectedIndex] = createSignal(0);
   const [loading, setLoading] = createSignal(false);
   const [includeHindsight, setIncludeHindsight] = createSignal(true);
+  const [allBanks, setAllBanks] = createSignal(false);
   let inputRef: HTMLInputElement | undefined;
-  const stripFtsMarks = (s: string): string => s.replace(/<\/?mark>/g, "");
+  let searchEpoch = 0;
 
-  const runSearch = async (q: string, withHs: boolean) => {
+  const targetBanks = () => {
+    if (allBanks() && props.banks?.length) {
+      return props.banks
+        .map((b) => b.bank_id)
+        .filter((id) => id && id.toLowerCase() !== "spark-memory-bank");
+    }
+    const sBank = props.syncBank || "folio";
+    return Array.from(new Set([props.activeBank, sBank]));
+  };
+
+  const runProgressiveSearch = async (q: string, withHs: boolean) => {
+    const myEpoch = ++searchEpoch;
     setLoading(true);
     try {
-      const resp = await rpcInvoke<{ results: SearchHit[] }>("unified_search", {
+      // Phase 1: Instant (<3ms) local SQLite FTS5 + cached Hindsight/Notion hits
+      const localResp = await rpcInvoke<{ results: SearchHit[] }>("unified_search", {
         query: q,
         bank_id: props.activeBank,
         include_hindsight: withHs,
         include_notion: true,
-        limit: 20,
+        local_only: true,
+        banks: targetBanks(),
+        limit: 24,
       });
-      setResults(resp.results || []);
+      if (myEpoch !== searchEpoch) return;
+      setResults(localResp.results || []);
       setSelectedIndex(0);
+
+      // Phase 2: Live parallel Hindsight semantic + KB recall if query is non-empty
+      if (!withHs || !q.trim()) {
+        setLoading(false);
+        return;
+      }
+      const fullResp = await rpcInvoke<{ results: SearchHit[] }>("unified_search", {
+        query: q,
+        bank_id: props.activeBank,
+        include_hindsight: true,
+        include_notion: true,
+        local_only: false,
+        banks: targetBanks(),
+        limit: 24,
+      });
+      if (myEpoch !== searchEpoch) return;
+      setResults(fullResp.results || []);
     } catch {
-      setResults([]);
+      if (myEpoch === searchEpoch) setResults([]);
     } finally {
-      setLoading(false);
+      if (myEpoch === searchEpoch) setLoading(false);
     }
   };
 
@@ -46,16 +91,18 @@ export function SearchModal(props: {
       inputRef?.focus();
       inputRef?.select();
     });
-    void runSearch(query(), includeHindsight());
+    void runProgressiveSearch(query(), includeHindsight());
   });
 
   createEffect(() => {
     if (!props.open) return;
     const q = query();
     const hs = includeHindsight();
+    const _all = allBanks();
+    void _all;
     const timer = window.setTimeout(() => {
-      void runSearch(q, hs);
-    }, 110);
+      void runProgressiveSearch(q, hs);
+    }, 55);
     onCleanup(() => window.clearTimeout(timer));
   });
 
@@ -77,7 +124,9 @@ export function SearchModal(props: {
                 type="text"
                 class="sd-input"
                 data-testid="search-input"
-                placeholder={`Search local Markdown + Hindsight (${props.activeBank})…`}
+                placeholder={`Search local Markdown + Hindsight (${
+                  allBanks() ? "all banks" : targetBanks().join(" + ")
+                })…`}
                 value={query()}
                 onInput={(e) => setQuery(e.currentTarget.value)}
                 onKeyDown={(e) => {
@@ -109,8 +158,18 @@ export function SearchModal(props: {
                 onClick={() => setIncludeHindsight((v) => !v)}
                 title="Toggle live Hindsight semantic recall"
               >
-                Hindsight · {props.activeBank}
+                Hindsight
               </button>
+              <Show when={includeHindsight()}>
+                <button
+                  type="button"
+                  class={`sd-tab ${allBanks() ? "is-active" : ""}`}
+                  onClick={() => setAllBanks((v) => !v)}
+                  title="Recall across every Hindsight memory bank"
+                >
+                  All Banks
+                </button>
+              </Show>
               <button type="button" class="sd-esc-btn" onClick={() => props.onClose()}>
                 ESC
               </button>
@@ -133,7 +192,10 @@ export function SearchModal(props: {
                   const providerLabel = () => {
                     if (hit.provider === "local-fs") return "Local";
                     if (hit.provider === "hindsight") {
-                      return hit.is_agent_summary ? "Hindsight · KP" : "Hindsight · Raw";
+                      const bankSuffix = hit.scope ? ` · ${hit.scope}` : "";
+                      return hit.is_agent_summary
+                        ? `KP${bankSuffix}`
+                        : `Raw${bankSuffix}`;
                     }
                     return "Notion";
                   };
@@ -161,7 +223,7 @@ export function SearchModal(props: {
                         </span>
                       </div>
                       <Show when={hit.snippet}>
-                        <div class="search-row-snippet">{stripFtsMarks(hit.snippet)}</div>
+                        <div class="search-row-snippet">{renderSafeMarks(hit.snippet)}</div>
                       </Show>
                     </button>
                   );
@@ -171,9 +233,9 @@ export function SearchModal(props: {
           </div>
 
           <div class="search-foot">
-            <span>↑↓ Navigate · ↵ Open · ⌘⇧F Unified Search & Recall</span>
+            <span>↑↓ Navigate · ↵ Open · ⌘⇧F Progressive FTS5 + Hindsight Recall</span>
             <Show when={loading()}>
-              <span class="search-status-pulse">Syncing…</span>
+              <span class="search-status-pulse">Recalling Hindsight…</span>
             </Show>
           </div>
         </div>

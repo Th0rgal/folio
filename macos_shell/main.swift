@@ -23,6 +23,9 @@ final class FolioBundleSchemeHandler: NSObject, WKURLSchemeHandler {
         case "json": return "application/json; charset=utf-8"
         case "svg": return "image/svg+xml"
         case "png": return "image/png"
+        case "jpg", "jpeg": return "image/jpeg"
+        case "webp": return "image/webp"
+        case "wasm": return "application/wasm"
         case "woff2": return "font/woff2"
         case "woff": return "font/woff"
         case "ttf": return "font/ttf"
@@ -61,11 +64,13 @@ final class FolioBundleSchemeHandler: NSObject, WKURLSchemeHandler {
             urlSchemeTask.didFailWithError(URLError(.fileDoesNotExist))
             return
         }
+        let ext = target.pathExtension.lowercased()
+        let isImmut = relPath.hasPrefix("assets/") || ext == "woff2" || ext == "woff" || ext == "ttf" || ext == "wasm"
         let resp = HTTPURLResponse(url: reqURL, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: [
             "Content-Type": Self.mimeType(for: target.pathExtension),
             "Content-Length": String(data.count),
             "Access-Control-Allow-Origin": "folio://localhost",
-            "Cache-Control": "no-cache"
+            "Cache-Control": isImmut ? "public, max-age=31536000, immutable" : "no-cache"
         ])!
         urlSchemeTask.didReceive(resp)
         urlSchemeTask.didReceive(data)
@@ -96,16 +101,45 @@ final class FolioAppDelegate: NSObject, NSApplicationDelegate, WKNavigationDeleg
         return """
         (() => {
           const _fetch = window.fetch.bind(window), _jsonStringify = JSON.stringify;
-          const FOLIO_LOCALD_URL = "http://127.0.0.1:\(port)/__folio_rpc", FOLIO_TOKEN = \(escapedToken);
-          const listeners = new Map(); let timer = 0;
-          const emit = (name, payload) => { const s = listeners.get(name); if (s) for (const h of s) { try { h({ event: name, payload }); } catch {} } };
+          const FOLIO_LOCALD_BASE = "http://127.0.0.1:\(port)", FOLIO_LOCALD_URL = FOLIO_LOCALD_BASE + "/__folio_rpc", FOLIO_EVENTS_URL = FOLIO_LOCALD_BASE + "/__folio_events", FOLIO_TOKEN = \(escapedToken);
+          const listeners = new Map(); let streamCtrl = null;
+          const hasListeners = () => { for (const s of listeners.values()) if (s.size) return true; return false; };
+          const emit = (name, payload) => { const s = listeners.get(name); if (s) for (const h of Array.from(s)) { try { h({ event: name, payload }); } catch {} } };
+          const dispatch = (ev) => { if (ev && typeof ev === 'object' && typeof ev.event === 'string') emit(ev.event, ev.payload); };
           async function drain() {
-            if (!listeners.size) { if (timer) { clearInterval(timer); timer = 0; } return; }
+            if (!hasListeners()) return;
             try {
               const r = await _fetch(FOLIO_LOCALD_URL, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Folio-Token': FOLIO_TOKEN }, body: _jsonStringify({ command: 'poll_events', args: {} }) });
               const b = await r.json();
-              if (Array.isArray(b.result)) for (const ev of b.result) { if (typeof ev.event === 'string') emit(ev.event, ev.payload); }
+              if (Array.isArray(b.result)) for (const ev of b.result) dispatch(ev);
             } catch {}
+          }
+          const stopStream = () => { if (streamCtrl) { streamCtrl.abort(); streamCtrl = null; } };
+          function ensureStream() {
+            if (streamCtrl || !hasListeners()) return;
+            const ctrl = streamCtrl = new AbortController();
+            (async () => {
+              while (!ctrl.signal.aborted && hasListeners()) {
+                try {
+                  const r = await _fetch(FOLIO_EVENTS_URL, { headers: { 'Accept': 'text/event-stream', 'X-Folio-Token': FOLIO_TOKEN }, signal: ctrl.signal });
+                  if (!r.ok || !r.body) throw new Error('sse');
+                  const rd = r.body.getReader(), dec = new TextDecoder(); let buf = '';
+                  while (!ctrl.signal.aborted && hasListeners()) {
+                    const { value, done } = await rd.read(); if (done) break;
+                    buf += dec.decode(value, { stream: true }); let idx;
+                    while ((idx = buf.indexOf('\\n\\n')) >= 0) {
+                      const fr = buf.slice(0, idx); buf = buf.slice(idx + 2);
+                      for (const ln of fr.split('\\n')) { if (ln.startsWith('data: ')) dispatch(JSON.parse(ln.slice(6))); }
+                    }
+                  }
+                } catch {
+                  if (ctrl.signal.aborted || !hasListeners()) break;
+                  await new Promise(w => setTimeout(w, 900));
+                  if (!ctrl.signal.aborted && hasListeners()) await drain();
+                }
+              }
+              if (streamCtrl === ctrl) streamCtrl = null;
+            })();
           }
           async function invoke(command, args = {}) {
             if (command === "set_window_theme") {
@@ -123,9 +157,11 @@ final class FolioAppDelegate: NSObject, NSApplicationDelegate, WKNavigationDeleg
           }
           async function listen(n, h) {
             if (!listeners.has(n)) listeners.set(n, new Set());
-            listeners.get(n).add(h); if (!timer) timer = setInterval(drain, 350); return () => listeners.get(n)?.delete(h);
+            listeners.get(n).add(h); ensureStream();
+            return () => { listeners.get(n)?.delete(h); if (!listeners.get(n)?.size) listeners.delete(n); if (!hasListeners()) stopStream(); };
           }
-          window.__FOLIO_DESKTOP__ = window.__ORB_DESKTOP__ = { core: { invoke }, event: { listen } };
+          const assetUrl = (uri, rel) => FOLIO_LOCALD_BASE + '/__folio_asset?uri=' + encodeURIComponent(uri || '') + '&rel=' + encodeURIComponent(rel || '') + '&token=' + encodeURIComponent(FOLIO_TOKEN);
+          window.__FOLIO_DESKTOP__ = window.__ORB_DESKTOP__ = { core: { invoke, assetUrl }, event: { listen } };
         })();
         """
     }
@@ -169,10 +205,17 @@ final class FolioAppDelegate: NSObject, NSApplicationDelegate, WKNavigationDeleg
         let keep = [
             "HOME", "PATH", "TMPDIR", "USER", "LANG",
             "FOLIO_STATE_DIR", "FOLIO_UI_ROOT", "FOLIO_DEFAULT_NOTES_DIR", "FOLIO_NOTES_DIRS",
-            "FOLIO_SECRETS_DIR", "HINDSIGHT_API_URL", "HINDSIGHT_BANK_ID",
+            "FOLIO_SECRETS_DIR", "FOLIO_SECRET_HELPER", "FOLIO_THEME_MODE",
+            "FOLIO_HINDSIGHT_URL", "FOLIO_DEFAULT_BANK", "FOLIO_SYNC_BANK",
+            "FOLIO_ORBROUTER_URL", "FOLIO_ORBROUTER_API_KEY", "FOLIO_ORBROUTER_KEY_FILE",
+            "ORBROUTER_API_KEY", "ORB_API_URL", "ORB_STATE_DIR",
+            "HINDSIGHT_API_URL", "HINDSIGHT_BASE_URL", "HINDSIGHT_BANK_ID",
             "HINDSIGHT_API_KEY", "HINDSIGHT_API_KEY_FILE",
             "SPARK_MEMORY_API_TOKEN", "SPARK_MEMORY_API_TOKEN_FILE",
-            "FOLIO_HINDSIGHT_READONLY", "NOTION_API_KEY", "NOTION_API_KEY_FILE"
+            "FOLIO_HINDSIGHT_READONLY",
+            "NOTION_API_KEY", "NOTION_API_KEY_FILE", "NOTION_API_TOKEN", "NOTION_API_TOKEN_FILE",
+            "NOTION_API_KEY_PERSO", "NOTION_API_KEY_PERSO_FILE",
+            "SSL_CERT_FILE", "SSL_CERT_DIR"
         ]
         var env: [String: String] = [
             "FOLIO_LOCALD_PORT": String(port),

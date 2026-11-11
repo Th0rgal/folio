@@ -40,16 +40,19 @@ function SidebarBadge(props: { badge?: string | null; isAgent?: boolean }) {
   const cleaned = () => (props.badge ?? "").trim();
   const isZero = () => cleaned() === "" || cleaned() === "0";
   const isNumeric = () => /^\d+$/.test(cleaned());
+  const tone = () => {
+    const u = cleaned().toUpperCase();
+    if (u === "SYNC" || u === "FOLIO") return "synced";
+    if (u === "MOD") return "modified";
+    if (u === "LOCAL") return "private";
+    if (props.isAgent) return "agent";
+    return "";
+  };
 
   return (
     <Show when={!isZero()}>
-      <Show
-        when={!isNumeric()}
-        fallback={<span class="sb-count">{cleaned()}</span>}
-      >
-        <span class={`inbox-sb-badge ${props.isAgent ? "agent" : ""}`}>
-          {cleaned()}
-        </span>
+      <Show when={!isNumeric()} fallback={<span class="sb-count">{cleaned()}</span>}>
+        <span class={`inbox-sb-badge ${tone()}`}>{cleaned()}</span>
       </Show>
     </Show>
   );
@@ -163,6 +166,7 @@ function TreeBranch(props: {
 function BankSubcategory(props: {
   bank: { bank_id: string; name?: string };
   isDefaultBank: boolean;
+  isSyncBank: boolean;
   isActiveBank: boolean;
   nodes: TreeNode[] | undefined;
   loading: boolean;
@@ -172,7 +176,7 @@ function BankSubcategory(props: {
 }) {
   const storageKey = () => `folio:bank-open:${props.bank.bank_id}`;
   const [expanded, setExpanded] = createSignal(
-    readBoolStorage(storageKey(), props.isDefaultBank),
+    readBoolStorage(storageKey(), props.isDefaultBank || props.isSyncBank),
   );
 
   createEffect(() => {
@@ -181,7 +185,6 @@ function BankSubcategory(props: {
     }
   });
 
-  // Auto-expand bank subcategory if an active document inside it is opened (e.g. via Search)
   createEffect(() => {
     const uri = props.activeUri;
     if (uri && uri.startsWith(`hindsight://${props.bank.bank_id}/`) && !expanded()) {
@@ -198,7 +201,7 @@ function BankSubcategory(props: {
   });
 
   const isEmptyLoaded = createMemo(
-    () => props.nodes !== undefined && !props.loading && (leafCount() ?? 0) === 0,
+    () => props.nodes !== undefined && !props.loading && (leafCount() ?? 0) === 0 && !props.isSyncBank,
   );
 
   const toggle = () => {
@@ -233,6 +236,11 @@ function BankSubcategory(props: {
           <Ic.VaultIcon size={12.5} />
         </span>
         <span class="row-label">{props.bank.bank_id}</span>
+        <Show when={props.isSyncBank}>
+          <span class="inbox-sb-badge synced" title="Dedicated Folio note sync bank">
+            SYNC
+          </span>
+        </Show>
         <Show when={props.loading && !props.nodes}>
           <span class="sb-count">…</span>
         </Show>
@@ -247,7 +255,11 @@ function BankSubcategory(props: {
             when={(props.nodes?.length ?? 0) > 0}
             fallback={
               <div class="row note">
-                {props.loading ? "Loading bank…" : "Empty bank"}
+                {props.loading
+                  ? "Loading bank…"
+                  : props.isSyncBank
+                    ? "Dedicated Folio bank ready · press ⌘⇧S on any note to sync"
+                    : "Empty bank"}
               </div>
             }
           >
@@ -328,9 +340,11 @@ export function Sidebar(props: {
   activeUri: string | null;
   activeBank: string;
   defaultBank: string;
+  syncBank: string;
   banks: Array<{ bank_id: string; name?: string }>;
   hindsightStatus: ProviderStatus | undefined;
   notionStatus: ProviderStatus | undefined;
+  copilotOpen: boolean;
   sectionOpen: { local: boolean; hindsight: boolean; notion: boolean };
   onToggleSection: (id: "local" | "hindsight" | "notion") => void;
   themeMode: ThemeMode;
@@ -339,7 +353,10 @@ export function Sidebar(props: {
   onSelectUri: (uri: string, bankId?: string) => void;
   onEnsureBankLoaded: (bankId: string) => void;
   onNewNote: () => void;
+  onOpenDailyNote: () => void;
   onOpenSearch: () => void;
+  onToggleCopilot: () => void;
+  onNewFolder: () => void;
   onOpenMountDialog: () => void;
   onSyncNotion: () => void;
 }) {
@@ -351,6 +368,7 @@ export function Sidebar(props: {
 
     const rankOf = (bid: string): [number, number, string] => {
       if (bid === props.defaultBank) return [0, 0, bid.toLowerCase()];
+      if (bid === props.syncBank) return [0, 1, bid.toLowerCase()];
       const loaded = props.bankTrees[bid];
       const loading = Boolean(props.loadingBanks[bid]);
       if (loaded !== undefined && !loading) {
@@ -411,6 +429,14 @@ export function Sidebar(props: {
             <kbd>⌘N</kbd>
           </button>
 
+          <button type="button" class="row" onClick={props.onOpenDailyNote}>
+            <span class="row-ico">
+              <Ic.CalendarIcon />
+            </span>
+            <span class="row-label">Daily Journal</span>
+            <kbd>⌘⇧D</kbd>
+          </button>
+
           <button
             type="button"
             class="row"
@@ -424,7 +450,20 @@ export function Sidebar(props: {
             <kbd>⌘⇧F</kbd>
           </button>
 
-          {/* 1. Local Notes — expandable/hidable with icon + folder subcategories */}
+          <button
+            type="button"
+            class={`row ${props.copilotOpen ? "active" : ""}`}
+            data-testid="sidebar-copilot-btn"
+            onClick={props.onToggleCopilot}
+          >
+            <span class="row-ico">
+              <Ic.SparklesIcon />
+            </span>
+            <span class="row-label">Knowledge Copilot</span>
+            <kbd>⌘J</kbd>
+          </button>
+
+          {/* 1. Local Notes */}
           <ProviderSection
             id="local"
             title="Local Notes"
@@ -433,15 +472,26 @@ export function Sidebar(props: {
             onToggle={() => props.onToggleSection("local")}
             testId="local-tree"
             action={
-              <button
-                type="button"
-                class="section-add"
-                title="Mount local folder"
-                aria-label="Mount local folder"
-                onClick={props.onOpenMountDialog}
-              >
-                <Ic.PlusIcon size={14} />
-              </button>
+              <>
+                <button
+                  type="button"
+                  class="section-add"
+                  title="New subfolder"
+                  aria-label="New subfolder"
+                  onClick={props.onNewFolder}
+                >
+                  <Ic.FolderIcon size={13} />
+                </button>
+                <button
+                  type="button"
+                  class="section-add"
+                  title="Mount local folder"
+                  aria-label="Mount local folder"
+                  onClick={props.onOpenMountDialog}
+                >
+                  <Ic.PlusIcon size={14} />
+                </button>
+              </>
             }
           >
             <For each={props.localTree}>
@@ -457,7 +507,7 @@ export function Sidebar(props: {
             </For>
           </ProviderSection>
 
-          {/* 2. Hindsight — expandable/hidable with icon + Memory Bank folder subcategories */}
+          {/* 2. Hindsight */}
           <ProviderSection
             id="hindsight"
             title="Hindsight"
@@ -477,6 +527,7 @@ export function Sidebar(props: {
                   <BankSubcategory
                     bank={bank}
                     isDefaultBank={bank.bank_id === props.defaultBank}
+                    isSyncBank={bank.bank_id === props.syncBank && !props.hindsightStatus?.readonly}
                     isActiveBank={bank.bank_id === props.activeBank}
                     nodes={props.bankTrees[bank.bank_id]}
                     loading={Boolean(props.loadingBanks[bank.bank_id])}
@@ -489,7 +540,7 @@ export function Sidebar(props: {
             </Show>
           </ProviderSection>
 
-          {/* 3. Notion — expandable/hidable with icon + Workspace folder subcategories */}
+          {/* 3. Notion */}
           <ProviderSection
             id="notion"
             title="Notion"
@@ -552,7 +603,7 @@ export function Sidebar(props: {
           {props.themeMode === "dark" ? <Ic.MoonIcon size={14} /> : <Ic.SunIcon size={14} />}
           <span>{props.themeMode === "dark" ? "Dark" : "Light"}</span>
         </button>
-        <span class="sb-foot-meta">FTS5 · KaTeX</span>
+        <span class="sb-foot-meta">⌘K · ⌘J · {props.syncBank}</span>
       </div>
 
       <div class="sb-resize" onPointerDown={props.onStartResize} />

@@ -1,13 +1,20 @@
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { CommandPalette, type PaletteCommand } from "./CommandPalette";
+import { EditorPane } from "./EditorPane";
 import { EquationPopover } from "./EquationPopover";
 import { FindBar } from "./FindBar";
-import { MarkdownView } from "./MarkdownView";
+import { KnowledgePanel } from "./KnowledgePanel";
+import { MarkdownView, toggleMarkdownTaskAt } from "./MarkdownView";
 import { SearchModal } from "./SearchModal";
 import { Sidebar } from "./Sidebar";
 import * as Ic from "./icons";
 import {
   SHORTCUT_LABELS,
   historyNavDelta,
+  isCloseSurfaceShortcut,
+  isCommandPaletteShortcut,
+  isCopilotShortcut,
+  isDailyNoteShortcut,
   isFindShortcut,
   isFocusModeShortcut,
   isNewNoteShortcut,
@@ -15,6 +22,7 @@ import {
   isSaveShortcut,
   isSearchShortcut,
   isSidebarShortcut,
+  isSyncNoteShortcut,
   isToggleSourceShortcut,
   isToggleSplitShortcut,
   sidebarSectionShortcut,
@@ -23,8 +31,10 @@ import { applyMathEdit, extractMathSpans } from "./mathParser";
 import { detectPlatform, listenDesktopEvent, rpcInvoke } from "./rpc";
 import type {
   BootstrapPayload,
+  CopilotProfileId,
   DocumentRecord,
   MathSpan,
+  SyncSummary,
   ThemeMode,
   TreeNode,
   ViewMode,
@@ -168,13 +178,24 @@ export function App() {
     notion: readStoredSectionOpen("notion"),
   });
   const [activeBank, setActiveBank] = createSignal("thomas");
+  const [syncBank, setSyncBank] = createSignal("folio");
+  const [syncSummary, setSyncSummary] = createSignal<SyncSummary | null>(null);
+  const [syncingNote, setSyncingNote] = createSignal(false);
+  const [syncMenuOpen, setSyncMenuOpen] = createSignal(false);
+
   const [doc, setDoc] = createSignal<DocumentRecord | null>(null);
   const [draftMarkdown, setDraftMarkdown] = createSignal("");
+  const [editorSelection, setEditorSelection] = createSignal("");
   const [dirty, setDirty] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   const [viewMode, setViewMode] = createSignal<ViewMode>(initParams.modeOverride || "preview");
   const [sidebarOpen, setSidebarOpen] = createSignal(readStoredSidebarOpen());
   const [sbWidth, setSbWidth] = createSignal(248);
+  const [copilotOpen, setCopilotOpen] = createSignal(false);
+  const [copilotWidth, setCopilotWidth] = createSignal(392);
+  const [requestedCopilotProfile, setRequestedCopilotProfile] =
+    createSignal<CopilotProfileId | null>(null);
+
   const [themeMode, setThemeMode] = createSignal<ThemeMode>(initParams.themeOverride || "dark");
   const [history, setHistory] = createSignal<HistoryEntry[]>([]);
   const [hIdx, setHIdx] = createSignal(-1);
@@ -186,14 +207,34 @@ export function App() {
 
   const [selectedMath, setSelectedMath] = createSignal<MathSpan | null>(null);
   const [searchOpen, setSearchOpen] = createSignal(Boolean(initParams.searchQuery !== null));
+  const [paletteOpen, setPaletteOpen] = createSignal(false);
   const [mountModalOpen, setMountModalOpen] = createSignal(false);
   const [mountPathInput, setMountPathInput] = createSignal("");
+  const [folderModalOpen, setFolderModalOpen] = createSignal(false);
+  const [newFolderInput, setNewFolderInput] = createSignal("");
+  const [renameModalOpen, setRenameModalOpen] = createSignal(false);
+  const [renameTitleInput, setRenameTitleInput] = createSignal("");
+  const [renameFolderInput, setRenameFolderInput] = createSignal("");
   const [retainToast, setRetainToast] = createSignal<string | null>(null);
   const [errorBanner, setErrorBanner] = createSignal<string | null>(null);
 
   let saveTimer: number | undefined;
-  let composingInEditor = false;
-  let preFocusSnapshot: { sidebar: boolean; mode: ViewMode } | null = null;
+  let readerPaneRef: HTMLElement | undefined;
+  let preFocusSnapshot: { sidebar: boolean; copilot: boolean; mode: ViewMode } | null = null;
+
+  const showToast = (msg: string) => {
+    setRetainToast(msg);
+    window.setTimeout(() => {
+      if (retainToast() === msg) setRetainToast(null);
+    }, 2600);
+  };
+
+  const hasAnyModal = () =>
+    searchOpen() ||
+    paletteOpen() ||
+    mountModalOpen() ||
+    folderModalOpen() ||
+    renameModalOpen();
 
   const setSidebarVisible = (next: boolean) => {
     if (!next && document.getElementById("folio-sidebar")?.contains(document.activeElement)) {
@@ -238,6 +279,22 @@ export function App() {
     window.addEventListener("pointerup", up);
   };
 
+  const startCopilotResize = (e: PointerEvent) => {
+    e.preventDefault();
+    document.body.classList.add("resizing");
+    const move = (ev: PointerEvent) => {
+      const rightWidth = window.innerWidth - ev.clientX;
+      setCopilotWidth(Math.min(620, Math.max(300, rightWidth)));
+    };
+    const up = () => {
+      document.body.classList.remove("resizing");
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+
   const applyThemeToDom = (mode: ThemeMode) => {
     setThemeMode(mode);
     document.documentElement.dataset.theme = mode;
@@ -263,6 +320,7 @@ export function App() {
     try {
       setErrorBanner(null);
       setSelectedMath(null);
+      setSyncMenuOpen(false);
       const bank = bankOverride || activeBank();
       if (bankOverride && bankOverride !== activeBank()) {
         setActiveBank(bankOverride);
@@ -327,6 +385,15 @@ export function App() {
     await refreshBankTree(bankId);
   };
 
+  const refreshSyncSummary = async () => {
+    try {
+      const sum = await rpcInvoke<SyncSummary>("hindsight_sync_status");
+      setSyncSummary(sum);
+    } catch {
+      // ignore
+    }
+  };
+
   const handleSyncNotion = async () => {
     setNotionSyncing(true);
     try {
@@ -343,6 +410,7 @@ export function App() {
     void rpcInvoke<TreeNode[]>("list_tree", { provider: "local-fs" })
       .then(setLocalTree)
       .catch(() => undefined);
+    void refreshSyncSummary();
     const loadedBankIds = Object.keys(bankTrees());
     for (const bId of loadedBankIds.length ? loadedBankIds : [activeBank()]) {
       void refreshBankTree(bId);
@@ -369,6 +437,7 @@ export function App() {
       setDirty(false);
       const freshLocal = await rpcInvoke<TreeNode[]>("list_tree", { provider: "local-fs" });
       setLocalTree(freshLocal);
+      void refreshSyncSummary();
     } catch (err) {
       setErrorBanner(err instanceof Error ? err.message : String(err));
     } finally {
@@ -376,30 +445,304 @@ export function App() {
     }
   };
 
-  const scheduleAutosave = (nextRaw: string) => {
+  const scheduleAutosave = (nextRaw: string, triggerSave = true) => {
     setDraftMarkdown(nextRaw);
     const current = doc();
     if (!current || current.readonly || current.provider !== "local-fs") return;
     setDirty(true);
+    if (!triggerSave) return;
     if (saveTimer) window.clearTimeout(saveTimer);
     saveTimer = window.setTimeout(() => {
-      if (!composingInEditor) {
-        void flushSave(current.uri, nextRaw);
-      }
-    }, 420);
+      void flushSave(current.uri, nextRaw);
+    }, 360);
   };
 
   const toggleFocusMode = () => {
-    if (!sidebarOpen() && preFocusSnapshot) {
+    if (!sidebarOpen() && !copilotOpen() && preFocusSnapshot) {
       setSidebarVisible(preFocusSnapshot.sidebar);
+      setCopilotOpen(preFocusSnapshot.copilot);
       setViewMode(preFocusSnapshot.mode);
       preFocusSnapshot = null;
       return;
     }
-    preFocusSnapshot = { sidebar: sidebarOpen(), mode: viewMode() };
+    preFocusSnapshot = { sidebar: sidebarOpen(), copilot: copilotOpen(), mode: viewMode() };
     setSidebarVisible(false);
+    setCopilotOpen(false);
     setViewMode("preview");
   };
+
+  const handleCreateNote = async (folderOverride?: string) => {
+    try {
+      const currentFolder = folderOverride ?? (doc()?.provider === "local-fs" ? doc()?.folder_path || "Notes" : "Notes");
+      const created = await rpcInvoke<DocumentRecord & { tree?: TreeNode[] }>("create_local_document", {
+        title: "Untitled Research Note",
+        folder: currentFolder,
+      });
+      if (created.tree) setLocalTree(created.tree);
+      setDoc(created);
+      setDraftMarkdown(created.raw_markdown);
+      setDirty(false);
+      pushHistory({ uri: created.uri, bank: activeBank() });
+      setViewMode("split");
+      void refreshSyncSummary();
+    } catch (err) {
+      setErrorBanner(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleOpenDailyNote = async () => {
+    try {
+      const res = await rpcInvoke<{ document: DocumentRecord; tree: TreeNode[] }>(
+        "open_daily_note",
+        {},
+      );
+      setLocalTree(res.tree || []);
+      setDoc(res.document);
+      setDraftMarkdown(res.document.raw_markdown);
+      setDirty(false);
+      pushHistory({ uri: res.document.uri, bank: activeBank() });
+      if (viewMode() === "preview") setViewMode("split");
+      void refreshSyncSummary();
+    } catch (err) {
+      setErrorBanner(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleOpenRenameModal = () => {
+    const cur = doc();
+    if (!cur || cur.provider !== "local-fs") return;
+    setRenameTitleInput(cur.title);
+    setRenameFolderInput(cur.folder_path || "");
+    setRenameModalOpen(true);
+  };
+
+  const handleSubmitRename = async () => {
+    const cur = doc();
+    if (!cur || cur.provider !== "local-fs") return;
+    try {
+      const res = await rpcInvoke<{ document: DocumentRecord; tree: TreeNode[] }>(
+        "rename_local_document",
+        {
+          uri: cur.uri,
+          new_title: renameTitleInput().trim() || cur.title,
+          new_folder: renameFolderInput().trim(),
+          raw_markdown: dirty() ? draftMarkdown() : undefined,
+        },
+      );
+      setLocalTree(res.tree || []);
+      setDoc(res.document);
+      setDraftMarkdown(res.document.raw_markdown);
+      setDirty(false);
+      setRenameModalOpen(false);
+      pushHistory({ uri: res.document.uri, bank: activeBank() });
+      showToast(`Renamed to “${res.document.title}”`);
+    } catch (err) {
+      setErrorBanner(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleDeleteCurrentNote = async () => {
+    const cur = doc();
+    if (!cur || cur.provider !== "local-fs") return;
+    if (!window.confirm(`Delete local note “${cur.title}”?`)) return;
+    try {
+      const res = await rpcInvoke<{ tree: TreeNode[]; sync_summary?: SyncSummary }>(
+        "delete_local_document",
+        { uri: cur.uri },
+      );
+      setLocalTree(res.tree || []);
+      if (res.sync_summary) setSyncSummary(res.sync_summary);
+      const nextUri = firstDocumentUri(res.tree || []);
+      if (nextUri) {
+        await openDocument(nextUri);
+      } else {
+        setDoc(null);
+        setDraftMarkdown("");
+      }
+      showToast("Deleted local note");
+    } catch (err) {
+      setErrorBanner(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleForkRemoteToLocal = async () => {
+    const cur = doc();
+    if (!cur) return;
+    try {
+      const res = await rpcInvoke<{ document: DocumentRecord; tree: TreeNode[] }>("fork_to_local", {
+        uri: cur.uri,
+        bank_id: activeBank(),
+        folder: "Notes",
+      });
+      setLocalTree(res.tree || []);
+      setDoc(res.document);
+      setDraftMarkdown(res.document.raw_markdown);
+      setDirty(false);
+      setViewMode("split");
+      pushHistory({ uri: res.document.uri, bank: activeBank() });
+      showToast(`Forked to local note (${res.document.external_id})`);
+    } catch (err) {
+      setErrorBanner(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleRevealInFiles = async () => {
+    const cur = doc();
+    if (!cur || cur.provider !== "local-fs") return;
+    try {
+      await rpcInvoke("reveal_in_file_manager", { uri: cur.uri });
+    } catch (err) {
+      setErrorBanner(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleSyncActiveNote = async (promoteRawSource = false) => {
+    const cur = doc();
+    if (!cur || cur.provider !== "local-fs" || syncingNote()) return;
+    setSyncingNote(true);
+    setSyncMenuOpen(false);
+    try {
+      if (saveTimer) window.clearTimeout(saveTimer);
+      const res = await rpcInvoke<{
+        bank_id: string;
+        status: string;
+        document: DocumentRecord;
+        sync_summary: SyncSummary;
+        local_tree: TreeNode[];
+      }>("hindsight_sync_note", {
+        uri: cur.uri,
+        raw_markdown: draftMarkdown(),
+        promote_raw_source: promoteRawSource,
+      });
+      setDoc(res.document);
+      setDirty(false);
+      setLocalTree(res.local_tree || []);
+      setSyncSummary(res.sync_summary);
+      void refreshBankTree(res.bank_id);
+      showToast(
+        promoteRawSource
+          ? "Promoted raw source to Hindsight (thomas)"
+          : `Synced note to Hindsight bank (${res.bank_id})`,
+      );
+    } catch (err) {
+      setErrorBanner(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSyncingNote(false);
+    }
+  };
+
+  const handleSyncBatchNotes = async () => {
+    if (syncingNote()) return;
+    setSyncingNote(true);
+    setSyncMenuOpen(false);
+    try {
+      const res = await rpcInvoke<{
+        bank_id: string;
+        synced_count: number;
+        summary: SyncSummary;
+        local_tree: TreeNode[];
+      }>("hindsight_sync_batch", { bank_id: syncBank() });
+      setLocalTree(res.local_tree || []);
+      setSyncSummary(res.summary);
+      void refreshBankTree(res.bank_id);
+      const cur = doc();
+      if (cur && cur.provider === "local-fs") {
+        await openDocument(cur.uri, activeBank(), false);
+      }
+      showToast(`Synced ${res.synced_count} note(s) to Hindsight (${res.bank_id})`);
+    } catch (err) {
+      setErrorBanner(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSyncingNote(false);
+    }
+  };
+
+  const handleBrowseMountFolder = async () => {
+    try {
+      const res = await rpcInvoke<{ path?: string | null }>("pick_directory_native");
+      if (res?.path) {
+        setMountPathInput(res.path);
+      }
+    } catch {
+      // Fallback to manual path input when running in pure browser mode
+    }
+  };
+
+  const paletteCommands = createMemo<PaletteCommand[]>(() => [
+    {
+      id: "daily",
+      label: "Open Today's Daily Journal Note",
+      hint: "Journal/YYYY-MM-DD.md",
+      shortcut: SHORTCUT_LABELS.dailyNote,
+      run: () => void handleOpenDailyNote(),
+    },
+    {
+      id: "new-note",
+      label: "Create New Research Note",
+      shortcut: SHORTCUT_LABELS.newNote,
+      run: () => void handleCreateNote(),
+    },
+    {
+      id: "copilot",
+      label: "Toggle Knowledge Copilot Drawer",
+      hint: "Fast · Smart · Private · Obliterated",
+      shortcut: SHORTCUT_LABELS.copilot,
+      run: () => setCopilotOpen((v) => !v),
+    },
+    {
+      id: "sync-note",
+      label: `Sync Active Note to Hindsight (${syncBank()})`,
+      shortcut: SHORTCUT_LABELS.syncNote,
+      run: () => void handleSyncActiveNote(false),
+    },
+    {
+      id: "sync-batch",
+      label: `Sync All Changed Notes to Hindsight (${syncBank()})`,
+      hint: `${syncSummary()?.pending_sync ?? 0} pending`,
+      run: () => void handleSyncBatchNotes(),
+    },
+    {
+      id: "promote-thomas",
+      label: "Promote Active Note to thomas Raw-First Archive (save_source)",
+      run: () => void handleSyncActiveNote(true),
+    },
+    {
+      id: "rename-note",
+      label: "Rename or Move Active Note…",
+      run: () => handleOpenRenameModal(),
+    },
+    {
+      id: "fork-local",
+      label: "Fork Active Remote Page to Local Markdown Note",
+      run: () => void handleForkRemoteToLocal(),
+    },
+    {
+      id: "reveal-files",
+      label: "Reveal Active Note in File Manager",
+      run: () => void handleRevealInFiles(),
+    },
+    {
+      id: "new-folder",
+      label: "Create New Local Subfolder…",
+      run: () => setFolderModalOpen(true),
+    },
+    {
+      id: "mount-folder",
+      label: "Mount Local Markdown Directory…",
+      run: () => setMountModalOpen(true),
+    },
+    {
+      id: "view-split",
+      label: "Switch to Split Editor + Preview",
+      shortcut: SHORTCUT_LABELS.toggleSplit,
+      run: () => setViewMode("split"),
+    },
+    {
+      id: "theme-toggle",
+      label: "Toggle Dark / Light Appearance",
+      run: () => applyThemeToDom(themeMode() === "dark" ? "light" : "dark"),
+    },
+  ]);
 
   onMount(() => {
     document.documentElement.dataset.platform = detectPlatform();
@@ -417,6 +760,7 @@ export function App() {
 
     let unlistenTheme: (() => void) | undefined;
     let unlistenWorkspace: (() => void) | undefined;
+    let unlistenOpenTarget: (() => void) | undefined;
 
     void listenDesktopEvent("theme:changed", (payload) => {
       const mode = (payload as { mode?: string } | null)?.mode;
@@ -429,12 +773,32 @@ export function App() {
 
     void listenDesktopEvent("workspace:changed", () => {
       void rpcInvoke<TreeNode[]>("list_tree", { provider: "local-fs" }).then(setLocalTree);
+      void refreshSyncSummary();
     }).then((fn) => {
       unlistenWorkspace = fn;
     });
 
-    // When the user selects non-editable DOM text while an input/textarea retains focus with no
-    // text selected inside it, blur the input so WebKit/WebKitGTK routes Cmd/Ctrl+C to the selection.
+    void listenDesktopEvent("app:open-target", (payload) => {
+      const target = (payload as { target?: string } | null)?.target;
+      if (!target) return;
+      void rpcInvoke<{ document: DocumentRecord | null; tree: TreeNode[] }>(
+        "open_filesystem_path",
+        { target, bank_id: activeBank() },
+      )
+        .then((res) => {
+          if (res.tree) setLocalTree(res.tree);
+          if (res.document) {
+            setDoc(res.document);
+            setDraftMarkdown(res.document.raw_markdown);
+            setDirty(false);
+            pushHistory({ uri: res.document.uri, bank: activeBank() });
+          }
+        })
+        .catch((err) => setErrorBanner(err instanceof Error ? err.message : String(err)));
+    }).then((fn) => {
+      unlistenOpenTarget = fn;
+    });
+
     const onSelectionChange = () => {
       const active = document.activeElement;
       if (!(active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement)) return;
@@ -448,8 +812,52 @@ export function App() {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.isComposing) return;
 
-      // Orb sidebar toggle (⌘B) works in every view/focus state outside modal dialogs
-      if (isSidebarShortcut(e) && !searchOpen() && !mountModalOpen()) {
+      // ⌘W closes active modal / popover / Copilot drawer without killing the window
+      if (isCloseSurfaceShortcut(e)) {
+        e.preventDefault();
+        if (paletteOpen()) {
+          setPaletteOpen(false);
+          return;
+        }
+        if (searchOpen()) {
+          setSearchOpen(false);
+          return;
+        }
+        if (mountModalOpen() || folderModalOpen() || renameModalOpen() || syncMenuOpen()) {
+          setMountModalOpen(false);
+          setFolderModalOpen(false);
+          setRenameModalOpen(false);
+          setSyncMenuOpen(false);
+          return;
+        }
+        if (selectedMath()) {
+          setSelectedMath(null);
+          return;
+        }
+        if (copilotOpen()) {
+          setCopilotOpen(false);
+          return;
+        }
+        return;
+      }
+
+      // ⌘K Command Palette
+      if (isCommandPaletteShortcut(e)) {
+        e.preventDefault();
+        setSearchOpen(false);
+        setPaletteOpen((v) => !v);
+        return;
+      }
+
+      // ⌘J Knowledge Copilot drawer
+      if (isCopilotShortcut(e) && !hasAnyModal()) {
+        e.preventDefault();
+        setCopilotOpen((v) => !v);
+        return;
+      }
+
+      // ⌘B Sidebar toggle
+      if (isSidebarShortcut(e) && !hasAnyModal()) {
         e.preventDefault();
         e.stopPropagation();
         toggleSidebar();
@@ -460,18 +868,17 @@ export function App() {
         isFindShortcut(e) &&
         Boolean(document.getElementById("folio-sidebar")?.contains(document.activeElement));
 
-      // Orb global Search & Recall: ⌘⇧F (or ⌘F when focus is in the sidebar)
+      // ⌘⇧F Global Search & Recall
       if (isSearchShortcut(e) || sidebarFocused) {
         e.preventDefault();
+        setPaletteOpen(false);
         if (searchOpen()) {
           const el = document.querySelector<HTMLInputElement>('[data-testid="search-input"]');
           el?.focus({ preventScroll: true });
           el?.select();
           return;
         }
-        if (!mountModalOpen()) {
-          setSearchOpen(true);
-        }
+        setSearchOpen(true);
         return;
       }
 
@@ -481,15 +888,23 @@ export function App() {
         return;
       }
 
-      if (searchOpen() || mountModalOpen()) {
-        if (e.key === "Escape" && mountModalOpen()) {
+      if (hasAnyModal()) {
+        if (e.key === "Escape") {
           e.preventDefault();
           setMountModalOpen(false);
+          setFolderModalOpen(false);
+          setRenameModalOpen(false);
+          setPaletteOpen(false);
         }
         return;
       }
 
       if (e.key === "Escape") {
+        if (syncMenuOpen()) {
+          e.preventDefault();
+          setSyncMenuOpen(false);
+          return;
+        }
         if (sidebarOpen() && window.matchMedia?.("(max-width: 720px)").matches) {
           e.preventDefault();
           setSidebarVisible(false);
@@ -500,6 +915,21 @@ export function App() {
           setSelectedMath(null);
           return;
         }
+      }
+
+      if (isDailyNoteShortcut(e)) {
+        e.preventDefault();
+        void handleOpenDailyNote();
+        return;
+      }
+
+      if (isSyncNoteShortcut(e)) {
+        const cur = doc();
+        if (cur && cur.provider === "local-fs") {
+          e.preventDefault();
+          void handleSyncActiveNote(false);
+        }
+        return;
       }
 
       if (isToggleSourceShortcut(e)) {
@@ -564,6 +994,10 @@ export function App() {
         setLocalTree(data.local_tree || []);
         const defaultBank = data.active_bank || "thomas";
         setActiveBank(defaultBank);
+        if (data.sync_bank) setSyncBank(data.sync_bank);
+        if (data.providers.hindsight?.sync_summary) {
+          setSyncSummary(data.providers.hindsight.sync_summary);
+        }
         if (data.macros) setMacros(data.macros);
         if (
           !initParams.themeOverride &&
@@ -588,9 +1022,30 @@ export function App() {
             .finally(() => setNotionSyncing(false));
         }
 
-        const initialTarget = initParams.openUri || firstDocumentUri(data.local_tree || []);
-        if (initialTarget) {
-          await openDocument(initialTarget, defaultBank);
+        if (initParams.openUri) {
+          if (
+            initParams.openUri.startsWith("/") ||
+            initParams.openUri.startsWith("file://") ||
+            initParams.openUri.startsWith("folio://")
+          ) {
+            const openedFs = await rpcInvoke<{ document: DocumentRecord | null; tree: TreeNode[] }>(
+              "open_filesystem_path",
+              { target: initParams.openUri, bank_id: defaultBank },
+            );
+            if (openedFs.tree) setLocalTree(openedFs.tree);
+            if (openedFs.document) {
+              setDoc(openedFs.document);
+              setDraftMarkdown(openedFs.document.raw_markdown);
+              pushHistory({ uri: openedFs.document.uri, bank: defaultBank });
+            }
+          } else {
+            await openDocument(initParams.openUri, defaultBank);
+          }
+        } else {
+          const initialTarget = firstDocumentUri(data.local_tree || []);
+          if (initialTarget) {
+            await openDocument(initialTarget, defaultBank);
+          }
         }
       } catch (err) {
         setErrorBanner(err instanceof Error ? err.message : String(err));
@@ -603,6 +1058,7 @@ export function App() {
       window.removeEventListener("keydown", onKeyDown, true);
       unlistenTheme?.();
       unlistenWorkspace?.();
+      unlistenOpenTarget?.();
       if (saveTimer) window.clearTimeout(saveTimer);
     });
   });
@@ -623,24 +1079,6 @@ export function App() {
     }
   });
 
-  const handleCreateNote = async () => {
-    try {
-      const created = await rpcInvoke<DocumentRecord>("create_local_document", {
-        title: "Untitled Research Note",
-        folder: "Notes",
-      });
-      const freshTree = await rpcInvoke<TreeNode[]>("list_tree", { provider: "local-fs" });
-      setLocalTree(freshTree);
-      setDoc(created);
-      setDraftMarkdown(created.raw_markdown);
-      setDirty(false);
-      pushHistory({ uri: created.uri, bank: activeBank() });
-      setViewMode("split");
-    } catch (err) {
-      setErrorBanner(err instanceof Error ? err.message : String(err));
-    }
-  };
-
   const handleApplyEquation = (span: MathSpan, nextTex: string) => {
     const updatedRaw = applyMathEdit(draftMarkdown(), span, nextTex);
     scheduleAutosave(updatedRaw);
@@ -651,25 +1089,6 @@ export function App() {
   const handleSaveMacros = async (nextMacros: Record<string, string>) => {
     setMacros(nextMacros);
     await rpcInvoke("save_latex_macros", { macros: nextMacros }).catch(() => undefined);
-  };
-
-  const handleRetainToHindsight = async () => {
-    const current = doc();
-    if (!current) return;
-    try {
-      await rpcInvoke("hindsight_save_source", {
-        content: draftMarkdown(),
-        bank_id: activeBank(),
-        author: "thomas",
-        source_type: "markdown",
-        tags: current.tags,
-        is_agent_summary: false,
-      });
-      setRetainToast(`Saved raw source to Hindsight (${activeBank()})`);
-      window.setTimeout(() => setRetainToast(null), 2600);
-    } catch (err) {
-      setErrorBanner(err instanceof Error ? err.message : String(err));
-    }
   };
 
   const cleanTags = createMemo(() => {
@@ -702,12 +1121,26 @@ export function App() {
     return out;
   });
 
+  const syncStateLabel = createMemo(() => {
+    const cur = doc();
+    if (!cur || cur.provider !== "local-fs") return null;
+    if (dirty()) return { text: `Modified · ${syncBank()}`, tone: "modified" };
+    const st = cur.sync?.state || "unsynced";
+    if (st === "private") return { text: "Local (#private)", tone: "private" };
+    if (st === "synced") return { text: `Synced · ${cur.sync?.target_bank || syncBank()}`, tone: "synced" };
+    if (st === "modified") return { text: `Modified · ${cur.sync?.target_bank || syncBank()}`, tone: "modified" };
+    return { text: `Sync · ${syncBank()}`, tone: "unsynced" };
+  });
+
   return (
     <div
       class={`app folio-shell ${sidebarOpen() ? "" : "sb-hidden"}`}
       style={{ "--sb-w": `${sbWidth()}px` }}
       data-testid="folio-shell"
-      onClick={() => setSelectedMath(null)}
+      onClick={() => {
+        setSelectedMath(null);
+        setSyncMenuOpen(false);
+      }}
     >
       <button
         type="button"
@@ -726,9 +1159,11 @@ export function App() {
         activeUri={doc()?.uri ?? null}
         activeBank={activeBank()}
         defaultBank={boot()?.active_bank || "thomas"}
+        syncBank={syncBank()}
         banks={boot()?.banks || []}
         hindsightStatus={boot()?.providers.hindsight}
         notionStatus={boot()?.providers.notion}
+        copilotOpen={copilotOpen()}
         sectionOpen={sectionOpen()}
         onToggleSection={toggleProviderSection}
         themeMode={themeMode()}
@@ -737,7 +1172,10 @@ export function App() {
         onSelectUri={(u, bankId) => void openDocument(u, bankId)}
         onEnsureBankLoaded={(bankId) => void ensureBankTreeLoaded(bankId)}
         onNewNote={() => void handleCreateNote()}
+        onOpenDailyNote={() => void handleOpenDailyNote()}
         onOpenSearch={() => setSearchOpen(true)}
+        onToggleCopilot={() => setCopilotOpen((v) => !v)}
+        onNewFolder={() => setFolderModalOpen(true)}
         onOpenMountDialog={() => setMountModalOpen(true)}
         onSyncNotion={() => void handleSyncNotion()}
       />
@@ -755,6 +1193,15 @@ export function App() {
             onClick={toggleSidebar}
           >
             <Ic.SidebarIcon />
+          </button>
+          <button
+            type="button"
+            class="icon-btn"
+            aria-label="Command Palette"
+            title={`Command Palette (${SHORTCUT_LABELS.commandPalette})`}
+            onClick={() => setPaletteOpen(true)}
+          >
+            <Ic.CommandIcon />
           </button>
           <button
             type="button"
@@ -804,7 +1251,22 @@ export function App() {
                   <span class="crumb-folder">{d().folder_path}</span>
                   <span class="crumb-sep">/</span>
                 </Show>
-                <span class="crumb-title">{d().title}</span>
+                <Show
+                  when={d().provider === "local-fs"}
+                  fallback={<span class="crumb-title">{d().title}</span>}
+                >
+                  <button
+                    type="button"
+                    class="crumb-title crumb-title-btn"
+                    title="Click to rename or move note"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleOpenRenameModal();
+                    }}
+                  >
+                    {d().title}
+                  </button>
+                </Show>
                 <Show when={dirty() || saving()}>
                   <span class="save-indicator">{saving() ? "Saving…" : "Edited"}</span>
                 </Show>
@@ -841,6 +1303,20 @@ export function App() {
             </button>
           </div>
 
+          {/* Remote page -> 1-click Fork to Local */}
+          <Show when={doc() && doc()!.provider !== "local-fs"}>
+            <button
+              type="button"
+              class="dlg-button dlg-button-secondary tb-save-btn"
+              title="Fork this page into an editable local Markdown note"
+              onClick={() => void handleForkRemoteToLocal()}
+            >
+              <Ic.ForkIcon size={12.5} />
+              <span>Fork to Local</span>
+            </button>
+          </Show>
+
+          {/* Local note -> Dedicated Hindsight `folio` Bank Sync Split Button */}
           <Show
             when={
               doc()?.provider === "local-fs" &&
@@ -848,16 +1324,109 @@ export function App() {
               !boot()?.providers.hindsight?.readonly
             }
           >
-            <button
-              type="button"
-              class="dlg-button dlg-button-primary tb-save-btn"
-              title="Explicitly archive raw source to Hindsight (raw-first)"
-              onClick={() => void handleRetainToHindsight()}
-            >
-              <Ic.ArchiveUpIcon size={13} />
-              <span>Save to Hindsight</span>
-            </button>
+            <div class="sync-split-wrap" onClick={(e) => e.stopPropagation()}>
+              <button
+                type="button"
+                class={`sync-pill sync-${syncStateLabel()?.tone || "unsynced"}`}
+                disabled={syncingNote() || syncStateLabel()?.tone === "private"}
+                title={`Sync note to dedicated Hindsight '${syncBank()}' bank (${SHORTCUT_LABELS.syncNote})`}
+                onClick={() => void handleSyncActiveNote(false)}
+              >
+                <Ic.SyncCloudIcon size={13} />
+                <span>{syncingNote() ? "Syncing…" : syncStateLabel()?.text}</span>
+              </button>
+              <button
+                type="button"
+                class="sync-caret-btn"
+                aria-label="Hindsight sync options"
+                onClick={() => setSyncMenuOpen((v) => !v)}
+              >
+                <Ic.ChevronDown size={10.5} />
+              </button>
+
+              <Show when={syncMenuOpen()}>
+                <div class="sync-popover" data-testid="sync-popover">
+                  <div class="sync-pop-head">
+                    Dedicated Hindsight Sync Bank · <strong>{syncBank()}</strong>
+                  </div>
+                  <button
+                    type="button"
+                    class="sync-pop-item"
+                    disabled={syncStateLabel()?.tone === "private"}
+                    onClick={() => void handleSyncActiveNote(false)}
+                  >
+                    <Ic.SyncCloudIcon size={13.5} />
+                    <span>Sync Note to `{syncBank()}`</span>
+                    <kbd>⌘⇧S</kbd>
+                  </button>
+                  <button
+                    type="button"
+                    class="sync-pop-item"
+                    onClick={() => void handleSyncBatchNotes()}
+                  >
+                    <Ic.RefreshIcon size={13} />
+                    <span>
+                      Sync All Changed Notes ({syncSummary()?.pending_sync ?? 0} pending)
+                    </span>
+                  </button>
+                  <div class="sync-pop-sep" />
+                  <button
+                    type="button"
+                    class="sync-pop-item"
+                    disabled={syncStateLabel()?.tone === "private"}
+                    onClick={() => void handleSyncActiveNote(true)}
+                  >
+                    <Ic.ArchiveUpIcon size={13.5} />
+                    <span>Promote to `thomas` Raw Archive</span>
+                  </button>
+                  <div class="sync-pop-sep" />
+                  <button
+                    type="button"
+                    class="sync-pop-item"
+                    onClick={() => {
+                      setSyncMenuOpen(false);
+                      handleOpenRenameModal();
+                    }}
+                  >
+                    <Ic.EditPenIcon size={13} />
+                    <span>Rename / Move Note…</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="sync-pop-item"
+                    onClick={() => {
+                      setSyncMenuOpen(false);
+                      void handleRevealInFiles();
+                    }}
+                  >
+                    <Ic.FolderOpenIcon size={13} />
+                    <span>Reveal in File Manager</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="sync-pop-item danger"
+                    onClick={() => {
+                      setSyncMenuOpen(false);
+                      void handleDeleteCurrentNote();
+                    }}
+                  >
+                    <Ic.TrashIcon size={13} />
+                    <span>Delete Local Note</span>
+                  </button>
+                </div>
+              </Show>
+            </div>
           </Show>
+
+          <button
+            type="button"
+            class={`icon-btn ${copilotOpen() ? "is-active" : ""}`}
+            aria-label="Toggle Knowledge Copilot"
+            title={`Toggle Orb Knowledge Copilot (${SHORTCUT_LABELS.copilot})`}
+            onClick={() => setCopilotOpen((v) => !v)}
+          >
+            <Ic.SparklesIcon size={15} />
+          </button>
 
           <button
             type="button"
@@ -872,240 +1441,419 @@ export function App() {
       </header>
 
       <main class="main workspace-pane">
-        <FindBar
-          activeDocKey={doc()?.uri ?? null}
-          viewMode={viewMode()}
-          hasModal={searchOpen() || mountModalOpen()}
-        />
+        <div class="workspace-row">
+          <div class="workspace-center">
+            <FindBar
+              activeDocKey={doc()?.uri ?? null}
+              viewMode={viewMode()}
+              hasModal={hasAnyModal()}
+            />
 
-        <Show when={errorBanner()}>
-          {(msg) => (
-            <div class="error-strip" role="alert">
-              <span>{msg()}</span>
-              <button type="button" class="sb-mini-btn" onClick={() => setErrorBanner(null)}>
-                Dismiss
-              </button>
-            </div>
-          )}
-        </Show>
+            <Show when={errorBanner()}>
+              {(msg) => (
+                <div class="error-strip" role="alert">
+                  <span>{msg()}</span>
+                  <button type="button" class="sb-mini-btn" onClick={() => setErrorBanner(null)}>
+                    Dismiss
+                  </button>
+                </div>
+              )}
+            </Show>
 
-        <Show when={retainToast()}>
-          {(msg) => <div class="toast-banner">{msg()}</div>}
-        </Show>
+            <Show when={retainToast()}>
+              {(msg) => <div class="toast-banner">{msg()}</div>}
+            </Show>
 
-        <Show
-          when={doc()}
-          fallback={
-            <div class="empty-stage">
-              Select or create a Markdown note (<kbd>{SHORTCUT_LABELS.newNote}</kbd>) or recall
-              Hindsight (<kbd>{SHORTCUT_LABELS.search}</kbd>).
-            </div>
-          }
-        >
-          {(d) => (
-            <div class={`editor-stage mode-${viewMode()}`}>
-              {/* Left Source Editor Pane (in Split or Source mode) */}
-              <Show when={viewMode() === "split" || viewMode() === "source"}>
-                <section class="source-pane" onClick={(e) => e.stopPropagation()}>
-                  <div class="pane-subbar">
-                    <span>Markdown + LaTeX</span>
-                    <span>{d().readonly ? "Read-only" : "UTF-8 · Atomic save"}</span>
-                  </div>
-                  <textarea
-                    class="markdown-editor"
-                    data-testid="markdown-source-editor"
-                    spellcheck={false}
-                    readOnly={d().readonly}
-                    value={draftMarkdown()}
-                    onCompositionStart={() => {
-                      composingInEditor = true;
-                    }}
-                    onCompositionEnd={(e) => {
-                      composingInEditor = false;
-                      scheduleAutosave(e.currentTarget.value);
-                    }}
-                    onInput={(e) => {
-                      if (e.isComposing || composingInEditor) {
-                        setDraftMarkdown(e.currentTarget.value);
-                        return;
-                      }
-                      scheduleAutosave(e.currentTarget.value);
-                    }}
-                  />
-                </section>
-              </Show>
-
-              {/* Rendered Document & Provenance Pane */}
-              <Show when={viewMode() === "preview" || viewMode() === "split"}>
-                <section class="reader-pane">
-                  <div class="reader-column">
-                    {/* Quiet Orb-style Provenance & Frontmatter Line */}
-                    <div class="provenance-bar" data-testid="provenance-bar">
-                      <span
-                        class={`prov-badge ${
-                          d().provenance.is_agent_summary ? "agent-summary" : "human-authored"
-                        }`}
-                      >
-                        <span class="prov-dot" />
-                        {d().provenance.is_agent_summary
-                          ? "Agent summary · Knowledge Page"
-                          : d().provider === "notion"
-                            ? `Notion · ${d().provenance.author || "Workspace"}`
-                            : `Human · ${d().provenance.author || "thomas"}`}
-                      </span>
-
-                      <Show
-                        when={
-                          !d().provenance.is_agent_summary ||
-                          (d().provenance.source_type &&
-                            !/^knowledge[_-]page$/i.test(d().provenance.source_type || ""))
+            <Show
+              when={doc()}
+              fallback={
+                <div class="empty-stage">
+                  Select or create a Markdown note (<kbd>{SHORTCUT_LABELS.newNote}</kbd>), open
+                  today's journal (<kbd>{SHORTCUT_LABELS.dailyNote}</kbd>), or summon Copilot (
+                  <kbd>{SHORTCUT_LABELS.copilot}</kbd>).
+                </div>
+              }
+            >
+              {(d) => (
+                <div class={`editor-stage mode-${viewMode()}`}>
+                  <Show when={viewMode() === "split" || viewMode() === "source"}>
+                    <EditorPane
+                      value={draftMarkdown()}
+                      readonly={d().readonly}
+                      onChange={(next, immediate = true) => scheduleAutosave(next, immediate)}
+                      onSelectionChange={setEditorSelection}
+                      onAskCopilot={(sel) => {
+                        if (sel) setEditorSelection(sel);
+                        setCopilotOpen(true);
+                      }}
+                      onScrollRatio={(ratio) => {
+                        if (viewMode() !== "split" || !readerPaneRef) return;
+                        const max = readerPaneRef.scrollHeight - readerPaneRef.clientHeight;
+                        if (max > 4) {
+                          readerPaneRef.scrollTop = ratio * max;
                         }
-                      >
-                        <span class="prov-meta-pill">
-                          {d().provenance.source_type || d().provider}
-                        </span>
-                      </Show>
-
-                      <Show when={d().external_id && d().provider === "hindsight"}>
-                        <span class="prov-id-pill" title={d().external_id || undefined}>
-                          {formatShortExternalId(d().external_id || "")}
-                        </span>
-                      </Show>
-
-                      <Show when={formatShortDate(d().provenance.original_date || d().updated_at)}>
-                        {(shortDate) => (
-                          <span
-                            class="prov-meta-pill"
-                            title={d().provenance.original_date || d().updated_at || undefined}
-                          >
-                            {shortDate()}
-                          </span>
-                        )}
-                      </Show>
-
-                      <For each={cleanTags()}>
-                        {(tag) => (
-                          <span class="tag-pill" title={tag}>
-                            {tag}
-                          </span>
-                        )}
-                      </For>
-
-                      <For each={frontmatterEntries()}>
-                        {([k, v]) => (
-                          <span class="fm-pill" title={`${k}: ${v}`}>
-                            <span class="fm-key">{k}:</span>
-                            <span class="fm-val">{v}</span>
-                          </span>
-                        )}
-                      </For>
-                    </div>
-
-                    {/* Linked Hindsight Raw Sources / Related Pages strip */}
-                    <Show
-                      when={
-                        d().provenance.related_sources.length > 0 ||
-                        d().provenance.related_pages.length > 0
-                      }
-                    >
-                      <div class="grounding-strip">
-                        <span class="grounding-label">Grounded in</span>
-                        <div class="grounding-chips">
-                          <For each={d().provenance.related_sources.slice(0, 8)}>
-                            {(srcId) => (
-                              <button
-                                type="button"
-                                class="ref-chip src"
-                                onClick={() => void openDocument(srcId)}
-                              >
-                                <span class="ref-dot" />
-                                {srcId.slice(0, 16)}
-                              </button>
-                            )}
-                          </For>
-                          <For each={d().provenance.related_pages.slice(0, 6)}>
-                            {(kpId) => (
-                              <button
-                                type="button"
-                                class="ref-chip kp"
-                                onClick={() => void openDocument(kpId)}
-                              >
-                                <span class="ref-dot" />
-                                {kpId.slice(0, 16)}
-                              </button>
-                            )}
-                          </For>
-                        </div>
-                      </div>
-                    </Show>
-
-                    {/* Inline Equation Editor / Inspector Card */}
-                    <Show when={selectedMath()}>
-                      {(span) => (
-                        <EquationPopover
-                          span={span()}
-                          readonly={d().readonly}
-                          macros={macros()}
-                          onApply={handleApplyEquation}
-                          onSaveMacros={(m) => void handleSaveMacros(m)}
-                          onClose={() => setSelectedMath(null)}
-                        />
-                      )}
-                    </Show>
-
-                    {/* Rich Markdown + Offline KaTeX + Mermaid + Prism */}
-                    <MarkdownView
-                      rawMarkdown={draftMarkdown()}
-                      macros={macros()}
-                      themeMode={themeMode()}
-                      activeMathIndex={selectedMath()?.index ?? null}
-                      onSelectMath={(span) => setSelectedMath(span)}
-                      onOpenWikilink={(target) => void openDocument(target)}
-                      onExternalUrl={(url) =>
-                        void rpcInvoke("open_external_url", { url }).catch(() => undefined)
-                      }
+                      }}
                     />
+                  </Show>
 
-                    {/* Backlinks Footer */}
-                    <Show when={(d().backlinks || []).length > 0}>
-                      <footer class="backlinks-panel">
-                        <div class="backlinks-head">
-                          Backlinks · {(d().backlinks || []).length}
-                        </div>
-                        <div class="backlinks-grid">
-                          <For each={d().backlinks || []}>
-                            {(bl) => (
-                              <button
-                                type="button"
-                                class="backlink-card"
-                                onClick={() => void openDocument(bl.uri)}
+                  <Show when={viewMode() === "preview" || viewMode() === "split"}>
+                    <section ref={readerPaneRef} class="reader-pane">
+                      <div class="reader-column">
+                        <div class="provenance-bar" data-testid="provenance-bar">
+                          <span
+                            class={`prov-badge ${
+                              d().provenance.is_agent_summary ? "agent-summary" : "human-authored"
+                            }`}
+                          >
+                            <span class="prov-dot" />
+                            {d().provenance.is_agent_summary
+                              ? "Agent summary · Knowledge Page"
+                              : d().provider === "notion"
+                                ? `Notion · ${d().provenance.author || "Workspace"}`
+                                : `Human · ${d().provenance.author || "thomas"}`}
+                          </span>
+
+                          <Show
+                            when={
+                              !d().provenance.is_agent_summary ||
+                              (d().provenance.source_type &&
+                                !/^knowledge[_-]page$/i.test(d().provenance.source_type || ""))
+                            }
+                          >
+                            <span class="prov-meta-pill">
+                              {d().provenance.source_type || d().provider}
+                            </span>
+                          </Show>
+
+                          <Show when={d().external_id && d().provider === "hindsight"}>
+                            <span class="prov-id-pill" title={d().external_id || undefined}>
+                              {formatShortExternalId(d().external_id || "")}
+                            </span>
+                          </Show>
+
+                          <Show when={formatShortDate(d().provenance.original_date || d().updated_at)}>
+                            {(shortDate) => (
+                              <span
+                                class="prov-meta-pill"
+                                title={d().provenance.original_date || d().updated_at || undefined}
                               >
-                                <span class="bl-provider">{bl.provider}</span>
-                                <span class="bl-title">{bl.title}</span>
-                              </button>
+                                {shortDate()}
+                              </span>
+                            )}
+                          </Show>
+
+                          <For each={cleanTags()}>
+                            {(tag) => (
+                              <span class="tag-pill" title={tag}>
+                                {tag}
+                              </span>
+                            )}
+                          </For>
+
+                          <For each={frontmatterEntries()}>
+                            {([k, v]) => (
+                              <span class="fm-pill" title={`${k}: ${v}`}>
+                                <span class="fm-key">{k}:</span>
+                                <span class="fm-val">{v}</span>
+                              </span>
                             )}
                           </For>
                         </div>
-                      </footer>
-                    </Show>
-                  </div>
-                </section>
-              </Show>
-            </div>
-          )}
-        </Show>
+
+                        <Show
+                          when={
+                            d().provenance.related_sources.length > 0 ||
+                            d().provenance.related_pages.length > 0
+                          }
+                        >
+                          <div class="grounding-strip">
+                            <span class="grounding-label">Grounded in</span>
+                            <div class="grounding-chips">
+                              <For each={d().provenance.related_sources.slice(0, 8)}>
+                                {(srcId) => (
+                                  <button
+                                    type="button"
+                                    class="ref-chip src"
+                                    onClick={() => void openDocument(srcId)}
+                                  >
+                                    <span class="ref-dot" />
+                                    {srcId.slice(0, 16)}
+                                  </button>
+                                )}
+                              </For>
+                              <For each={d().provenance.related_pages.slice(0, 6)}>
+                                {(kpId) => (
+                                  <button
+                                    type="button"
+                                    class="ref-chip kp"
+                                    onClick={() => void openDocument(kpId)}
+                                  >
+                                    <span class="ref-dot" />
+                                    {kpId.slice(0, 16)}
+                                  </button>
+                                )}
+                              </For>
+                            </div>
+                          </div>
+                        </Show>
+
+                        <Show when={selectedMath()}>
+                          {(span) => (
+                            <EquationPopover
+                              span={span()}
+                              readonly={d().readonly}
+                              macros={macros()}
+                              onApply={handleApplyEquation}
+                              onSaveMacros={(m) => void handleSaveMacros(m)}
+                              onClose={() => setSelectedMath(null)}
+                            />
+                          )}
+                        </Show>
+
+                        <MarkdownView
+                          rawMarkdown={draftMarkdown()}
+                          noteUri={d().uri}
+                          macros={macros()}
+                          themeMode={themeMode()}
+                          activeMathIndex={selectedMath()?.index ?? null}
+                          onSelectMath={(span) => setSelectedMath(span)}
+                          onOpenWikilink={(target) => void openDocument(target)}
+                          onExternalUrl={(url) =>
+                            void rpcInvoke("open_external_url", { url }).catch(() => undefined)
+                          }
+                          onToggleTask={
+                            !d().readonly && d().provider === "local-fs"
+                              ? (ordinal) => {
+                                  const next = toggleMarkdownTaskAt(draftMarkdown(), ordinal);
+                                  scheduleAutosave(next);
+                                }
+                              : undefined
+                          }
+                        />
+
+                        <Show when={(d().backlinks || []).length > 0}>
+                          <footer class="backlinks-panel">
+                            <div class="backlinks-head">
+                              Backlinks · {(d().backlinks || []).length}
+                            </div>
+                            <div class="backlinks-grid">
+                              <For each={d().backlinks || []}>
+                                {(bl) => (
+                                  <button
+                                    type="button"
+                                    class="backlink-card"
+                                    onClick={() => void openDocument(bl.uri)}
+                                  >
+                                    <span class="bl-provider">{bl.provider}</span>
+                                    <span class="bl-title">{bl.title}</span>
+                                  </button>
+                                )}
+                              </For>
+                            </div>
+                          </footer>
+                        </Show>
+                      </div>
+                    </section>
+                  </Show>
+                </div>
+              )}
+            </Show>
+          </div>
+
+          {/* Right-hand Orb Knowledge Crawler & Editor Copilot Drawer (⌘J) */}
+          <KnowledgePanel
+            open={copilotOpen()}
+            width={copilotWidth()}
+            status={boot()?.providers.copilot}
+            activeDoc={doc()}
+            draftMarkdown={draftMarkdown()}
+            selection={editorSelection()}
+            activeBank={activeBank()}
+            macros={macros()}
+            themeMode={themeMode()}
+            requestedProfile={requestedCopilotProfile()}
+            onClearSelection={() => setEditorSelection("")}
+            onStartResize={startCopilotResize}
+            onClose={() => setCopilotOpen(false)}
+            onOpenUri={(u) => void openDocument(u)}
+            onProposalApplied={(updatedDoc, updatedTree) => {
+              setLocalTree(updatedTree || []);
+              if (updatedDoc) {
+                setDoc(updatedDoc);
+                setDraftMarkdown(updatedDoc.raw_markdown);
+                setDirty(false);
+                pushHistory({ uri: updatedDoc.uri, bank: activeBank() });
+              }
+              void refreshSyncSummary();
+              showToast("Applied Copilot note edit");
+            }}
+            onRestoreMarkdown={(uri, md) => {
+              if (doc()?.uri === uri) {
+                setDraftMarkdown(md);
+              }
+              void flushSave(uri, md).then(() => showToast("Restored previous note version"));
+            }}
+          />
+        </div>
       </main>
+
+      {/* ⌘K Command Palette */}
+      <CommandPalette
+        open={paletteOpen()}
+        activeDoc={doc()}
+        syncBank={syncBank()}
+        commands={paletteCommands()}
+        onSelectUri={(u) => void openDocument(u)}
+        onAskCopilot={(prof) => {
+          setRequestedCopilotProfile(prof);
+          setCopilotOpen(true);
+        }}
+        onClose={() => setPaletteOpen(false)}
+      />
 
       {/* ⌘⇧F Hybrid Search & Hindsight Recall Modal */}
       <SearchModal
         open={searchOpen()}
         initialQuery={initParams.searchQuery || ""}
         activeBank={activeBank()}
+        syncBank={syncBank()}
+        banks={boot()?.banks || []}
         onSelectUri={(u) => void openDocument(u)}
         onClose={() => setSearchOpen(false)}
       />
 
-      {/* Mount Local Folder Dialog (Orb Dialog contract) */}
+      {/* Rename / Move Local Note Dialog */}
+      <Show when={renameModalOpen()}>
+        <div class="dlg-back dlg-back-dim" onClick={() => setRenameModalOpen(false)}>
+          <div class="dlg" onClick={(e) => e.stopPropagation()}>
+            <div class="dlg-head">
+              <h3>Rename or move note</h3>
+              <button type="button" class="dlg-close" onClick={() => setRenameModalOpen(false)}>
+                <Ic.CloseIcon />
+              </button>
+            </div>
+            <div class="dlg-body dlg-stack">
+              <label class="dlg-label">
+                <span>Title</span>
+                <input
+                  type="text"
+                  class="s-input"
+                  value={renameTitleInput()}
+                  onInput={(e) => setRenameTitleInput(e.currentTarget.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void handleSubmitRename();
+                    }
+                  }}
+                />
+              </label>
+              <label class="dlg-label">
+                <span>Folder (relative to workspace root)</span>
+                <input
+                  type="text"
+                  class="s-input mono"
+                  placeholder="Notes"
+                  value={renameFolderInput()}
+                  onInput={(e) => setRenameFolderInput(e.currentTarget.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void handleSubmitRename();
+                    }
+                  }}
+                />
+              </label>
+            </div>
+            <div class="dlg-foot">
+              <button
+                type="button"
+                class="dlg-button dlg-button-secondary"
+                onClick={() => setRenameModalOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                class="dlg-button dlg-button-primary"
+                onClick={() => void handleSubmitRename()}
+              >
+                Save changes
+              </button>
+            </div>
+          </div>
+        </div>
+      </Show>
+
+      {/* New Local Subfolder Dialog */}
+      <Show when={folderModalOpen()}>
+        <div class="dlg-back dlg-back-dim" onClick={() => setFolderModalOpen(false)}>
+          <div class="dlg" onClick={(e) => e.stopPropagation()}>
+            <div class="dlg-head">
+              <h3>New subfolder</h3>
+              <button type="button" class="dlg-close" onClick={() => setFolderModalOpen(false)}>
+                <Ic.CloseIcon />
+              </button>
+            </div>
+            <p class="dlg-description">Create a nested directory inside your local notes vault.</p>
+            <div class="dlg-body">
+              <input
+                type="text"
+                class="s-input mono"
+                placeholder="Research/Theorems"
+                value={newFolderInput()}
+                onInput={(e) => setNewFolderInput(e.currentTarget.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && newFolderInput().trim()) {
+                    e.preventDefault();
+                    void rpcInvoke<{ tree: TreeNode[] }>("create_local_folder", {
+                      folder: newFolderInput().trim(),
+                    })
+                      .then((res) => {
+                        setLocalTree(res.tree || []);
+                        setNewFolderInput("");
+                        setFolderModalOpen(false);
+                      })
+                      .catch((err) =>
+                        setErrorBanner(err instanceof Error ? err.message : String(err)),
+                      );
+                  }
+                }}
+              />
+            </div>
+            <div class="dlg-foot">
+              <button
+                type="button"
+                class="dlg-button dlg-button-secondary"
+                onClick={() => setFolderModalOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                class="dlg-button dlg-button-primary"
+                onClick={() => {
+                  const f = newFolderInput().trim();
+                  if (!f) return;
+                  void rpcInvoke<{ tree: TreeNode[] }>("create_local_folder", { folder: f })
+                    .then((res) => {
+                      setLocalTree(res.tree || []);
+                      setNewFolderInput("");
+                      setFolderModalOpen(false);
+                    })
+                    .catch((err) =>
+                      setErrorBanner(err instanceof Error ? err.message : String(err)),
+                    );
+                }}
+              >
+                Create folder
+              </button>
+            </div>
+          </div>
+        </div>
+      </Show>
+
+      {/* Mount Local Folder Dialog (with native GTK4 / XDG portal Browse button) */}
       <Show when={mountModalOpen()}>
         <div class="dlg-back dlg-back-dim" onClick={() => setMountModalOpen(false)}>
           <div class="dlg" onClick={(e) => e.stopPropagation()}>
@@ -1123,7 +1871,7 @@ export function App() {
             <p class="dlg-description">
               Index any local Markdown directory into SQLite FTS5 without moving your files.
             </p>
-            <div class="dlg-body">
+            <div class="dlg-body dlg-input-row">
               <input
                 type="text"
                 class="s-input mono"
@@ -1131,6 +1879,13 @@ export function App() {
                 value={mountPathInput()}
                 onInput={(e) => setMountPathInput(e.currentTarget.value)}
               />
+              <button
+                type="button"
+                class="dlg-button dlg-button-secondary"
+                onClick={() => void handleBrowseMountFolder()}
+              >
+                Browse…
+              </button>
             </div>
             <div class="dlg-foot">
               <button
